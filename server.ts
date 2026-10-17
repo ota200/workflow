@@ -5,6 +5,7 @@ import dns from 'dns/promises';
 import net from 'net';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import { extractText, getDocumentProxy } from 'unpdf';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +15,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const isGemmaModel = /^gemma-/i.test(GEMINI_MODEL);
 const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
 const hasGeminiApiKey =
   Boolean(geminiApiKey) &&
@@ -40,6 +42,25 @@ const ai = hasGeminiApiKey
 const MAX_REMOTE_PDF_BYTES = 25 * 1024 * 1024;
 const MAX_REMOTE_PAGE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
+const MAX_MODEL_TEXT_CHARS = 350_000;
+
+async function extractPdfText(pdfBytes: Buffer): Promise<string> {
+  const pdf = await getDocumentProxy(new Uint8Array(pdfBytes));
+  const { text } = await extractText(pdf, { mergePages: false });
+  const pages = Array.isArray(text) ? text : [text];
+
+  return pages
+    .map((page, index) => `--- PDF page ${index + 1} ---\n${page}`)
+    .join('\n\n')
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function limitModelText(text: string): string {
+  if (text.length <= MAX_MODEL_TEXT_CHARS) return text;
+  return `${text.slice(0, MAX_MODEL_TEXT_CHARS)}\n\n[Document text truncated before model analysis.]`;
+}
 
 function isPrivateAddress(address: string): boolean {
   if (net.isIPv4(address)) {
@@ -133,12 +154,47 @@ function getPdfLinks(html: string, sourceUrl: URL): string[] {
       ) {
         links.push(link.toString());
       }
+
     } catch {
       // Ignore malformed links and continue scanning the page.
     }
   }
 
   return [...new Set(links)];
+}
+
+function parseModelJson(outputText: string): unknown {
+  const fencedJson = outputText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)?.[1];
+  const candidate = (fencedJson || outputText).trim();
+
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    const positions = [candidate.indexOf('{'), candidate.indexOf('[')].filter((index) => index >= 0);
+    const start = positions.length ? Math.min(...positions) : -1;
+    if (start < 0) throw new Error('The model did not return JSON.');
+
+    const end = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'));
+    if (end < start) throw new Error('The model returned incomplete JSON.');
+    return JSON.parse(candidate.slice(start, end + 1));
+  }
+}
+
+function normalizeAnalysisResult(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) return { items: value };
+  if (!value || typeof value !== 'object') {
+    throw new Error('The model returned an unsupported response shape.');
+  }
+
+  const object = value as Record<string, unknown>;
+  if (Array.isArray(object.items)) return object;
+
+  for (const key of ['events', 'assignments', 'schedule', 'classes', 'results']) {
+    if (Array.isArray(object[key])) return { ...object, items: object[key] };
+  }
+
+  if (object.data && typeof object.data === 'object') return normalizeAnalysisResult(object.data);
+  throw new Error('The model response did not contain an items array.');
 }
 
   function decodeHtmlEntities(value: string): string {
@@ -345,12 +401,29 @@ For each item, extract:
    - milestones: 2 to 4 actionable study blocks/milestones leading up to the due date with dayOffset (days prior to dueDate), title, and durationMinutes.
 
 Also detect the courseName, courseCode, instructor, and semester from the syllabus header.
-For keyInfo, extract overview, meetingSchedule, location, gradingPolicy, requiredMaterials, policies, officeHours, and importantNotes.
+For keyInfo, extract overview, meetingSchedule, location, gradingPolicy, readings, requiredMaterials, policies, officeHours, and importantNotes.
 Return valid JSON only. Ensure every date is valid ISO format and never append explanatory text to a date.`;
 
+    let preprocessedText = documentText?.trim() || '';
+    if (!preprocessedText && cleanBase64) {
+      try {
+        preprocessedText = await extractPdfText(Buffer.from(cleanBase64, 'base64'));
+      } catch (error) {
+        console.warn('Local PDF text extraction failed:', error);
+      }
+    }
+
     const sourceContext = sourceUrl ? `Source webpage: ${sourceUrl}\n\n` : '';
-    const contents = documentText
-      ? [{ text: `${sourceContext}${documentText}\n\n${promptText}` }]
+    if (isGemmaModel && preprocessedText.length < 40) {
+      return res.status(422).json({
+        error: 'PDF preprocessing failed',
+        message:
+          'The PDF did not contain enough extractable text for Gemma. Use a text-based PDF or run OCR on the scanned document before uploading it.',
+      });
+    }
+
+    const contents = preprocessedText.length >= 40
+      ? [{ text: `${sourceContext}PREPROCESSED DOCUMENT TEXT:\n${limitModelText(preprocessedText)}\n\n${promptText}` }]
       : [
           {
             inlineData: {
@@ -365,8 +438,8 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
       model: GEMINI_MODEL,
       contents,
       config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
+        responseMimeType: isGemmaModel ? undefined : 'application/json',
+        responseSchema: isGemmaModel ? undefined : {
           type: Type.OBJECT,
           properties: {
             courseName: { type: Type.STRING, description: 'Full course title' },
@@ -381,6 +454,7 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
                 meetingSchedule: { type: Type.STRING },
                 location: { type: Type.STRING },
                 gradingPolicy: { type: Type.STRING },
+                readings: { type: Type.ARRAY, items: { type: Type.STRING } },
                 requiredMaterials: { type: Type.ARRAY, items: { type: Type.STRING } },
                 policies: { type: Type.ARRAY, items: { type: Type.STRING } },
                 officeHours: { type: Type.STRING },
@@ -443,7 +517,7 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
       throw new Error('Gemini API returned an empty response.');
     }
 
-    const parsedData = JSON.parse(outputText);
+    const parsedData = normalizeAnalysisResult(parseModelJson(outputText));
     return res.json({
       success: true,
       data: parsedData,
@@ -451,9 +525,12 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
     });
   } catch (error: any) {
     console.error('Error in /api/analyze-pdf:', error);
+    const providerMessage = error?.message || 'Failed to analyze the supplied document.';
     return res.status(500).json({
       error: 'Analysis Failed',
-      message: error?.message || 'Failed to analyze PDF with Gemini API.',
+      message: isGemmaModel
+        ? `Gemma model "${GEMINI_MODEL}" failed to process this request. Verify that this exact model is available for your API key and supports PDF/web content. Provider response: ${providerMessage}`
+        : providerMessage,
     });
   }
 });

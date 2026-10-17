@@ -39,6 +39,7 @@ export interface CourseKeyInfo {
   meetingSchedule?: string;
   location?: string;
   gradingPolicy?: string;
+  readings?: string[];
   requiredMaterials?: string[];
   policies?: string[];
   officeHours?: string;

@@ -30,6 +30,7 @@ export const CourseKeyInfoCard: React.FC<CourseKeyInfoCardProps> = ({ info }) =>
       info.meetingSchedule ||
       info.location ||
       info.gradingPolicy ||
+      info.readings?.length ||
       info.requiredMaterials?.length ||
       info.policies?.length ||
       info.officeHours ||
@@ -62,9 +63,10 @@ export const CourseKeyInfoCard: React.FC<CourseKeyInfoCardProps> = ({ info }) =>
         <InfoBlock icon={<FileText className="w-4 h-4" />} label="Office hours" value={info.officeHours} />
       </div>
 
-      {(info.requiredMaterials?.length || info.policies?.length || info.importantNotes?.length) && (
+      {(info.readings?.length || info.requiredMaterials?.length || info.policies?.length || info.importantNotes?.length) && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
           {[
+            ['Readings', info.readings, <BookOpen className="w-3.5 h-3.5" />],
             ['Required materials', info.requiredMaterials, <FileText className="w-3.5 h-3.5" />],
             ['Policies', info.policies, <ShieldCheck className="w-3.5 h-3.5" />],
             ['Important notes', info.importantNotes, <BookOpen className="w-3.5 h-3.5" />],
