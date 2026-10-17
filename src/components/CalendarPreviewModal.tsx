@@ -78,15 +78,51 @@ export function downloadIcs(data: SyllabusAnalysisResult, includePrep: boolean) 
   downloadFile(ics, name, 'text/calendar;charset=utf-8');
 }
 
-export const CalendarTimeline: React.FC<{ data: SyllabusAnalysisResult; includePrep: boolean; onChange?: (data: SyllabusAnalysisResult) => void }> = ({ data, includePrep, onChange }) => {
-  const events = buildTimeline(data, includePrep);
+interface CalendarTimelineProps {
+  data: SyllabusAnalysisResult;
+  includePrep: boolean;
+  onChange?: (data: SyllabusAnalysisResult) => void;
+  documents?: SyllabusAnalysisResult[];
+  onSelectedData?: (data: SyllabusAnalysisResult) => void;
+}
+
+export const CalendarTimeline: React.FC<CalendarTimelineProps> = ({ data, includePrep, onChange, documents = [], onSelectedData }) => {
+  const options = documents.length ? documents : [data];
+  const [selectedId, setSelectedId] = React.useState(data.id || data.sourceDocument || '');
+  const selectedData = options.find((entry) => (entry.id || entry.sourceDocument || '') === selectedId) || data;
+  const events = buildTimeline(selectedData, includePrep);
   const [editingId, setEditingId] = React.useState<string | null>(null);
-  if (!events.length) return <div className="wf-empty">No events selected for export.</div>;
+  React.useEffect(() => {
+    onSelectedData?.(selectedData);
+  }, [onSelectedData, selectedData]);
 
   return (
     <div>
+      {options.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <label htmlFor="calendar-course-select" className="wf-small wf-muted">Class</label>
+          <select
+            id="calendar-course-select"
+            className="wf-input"
+            style={{ maxWidth: 360 }}
+            value={selectedId}
+            onChange={(event) => {
+              setSelectedId(event.target.value);
+              setEditingId(null);
+              const next = options.find((entry) => (entry.id || entry.sourceDocument || '') === event.target.value);
+              if (next) onSelectedData?.(next);
+            }}
+          >
+            {options.map((entry, index) => {
+              const id = entry.id || entry.sourceDocument || `document-${index}`;
+              return <option key={id} value={id}>{entry.courseName || entry.courseCode || entry.sourceDocument || 'Untitled class'}</option>;
+            })}
+          </select>
+        </div>
+      )}
+      {!events.length && <div className="wf-empty">No events selected for export.</div>}
       {events.map((evt) => {
-        const item = data.items.find((entry) => entry.id === evt.itemId);
+        const item = selectedData.items.find((entry) => entry.id === evt.itemId);
         const editing = editingId === evt.id;
         if (!item) return null;
         return (
@@ -115,7 +151,7 @@ export const CalendarTimeline: React.FC<{ data: SyllabusAnalysisResult; includeP
                     const title = (document.getElementById(`calendar-title-${evt.id}`) as HTMLInputElement)?.value.trim();
                     const date = (document.getElementById(`calendar-date-${evt.id}`) as HTMLInputElement)?.value;
                     if (!title || !date) return;
-                    const items = data.items.map((entry) => {
+                    const items = selectedData.items.map((entry) => {
                       if (entry.id !== item.id) return entry;
                       if (evt.kind === 'due') return { ...entry, title, dueDate: entry.dueDate.includes('T') ? `${date}T${entry.dueDate.slice(11)}` : date };
                       if (evt.kind === 'prep') return { ...entry, prepingInfo: { ...entry.prepingInfo, prepDate: date } };
@@ -129,7 +165,7 @@ export const CalendarTimeline: React.FC<{ data: SyllabusAnalysisResult; includeP
                         : candidate);
                       return { ...entry, prepingInfo: { ...entry.prepingInfo, milestones: milestone } };
                     });
-                    onChange({ ...data, items });
+                    onChange({ ...selectedData, items });
                     setEditingId(null);
                   }}>Save</button>
                   <button type="button" className="wf-ghost-button" onClick={() => setEditingId(null)}>Cancel</button>
@@ -150,10 +186,22 @@ interface CalendarPreviewModalProps {
   data: SyllabusAnalysisResult | null;
   includePrep?: boolean;
   onChange?: (data: SyllabusAnalysisResult) => void;
+  documents?: SyllabusAnalysisResult[];
 }
 
-export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOpen, onClose, data, includePrep = true, onChange }) => {
+export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOpen, onClose, data, includePrep = true, onChange, documents = [] }) => {
   if (!isOpen || !data) return null;
+  return <CalendarPreviewContent
+    data={data}
+    includePrep={includePrep}
+    onChange={onChange}
+    documents={documents}
+    onClose={onClose}
+  />;
+};
+
+const CalendarPreviewContent: React.FC<Omit<CalendarPreviewModalProps, 'isOpen'> & { data: SyllabusAnalysisResult }> = ({ onClose, data, includePrep = true, onChange, documents = [] }) => {
+  const [selectedData, setSelectedData] = React.useState(data);
 
   return (
     <div className="wf-backdrop" role="dialog" aria-modal="true" aria-label="Calendar preview" onClick={onClose}>
@@ -164,7 +212,7 @@ export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOp
             <p className="wf-small wf-muted" style={{ margin: 0 }}>What will be added when you import the .ics file</p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="workflow-primary-button" onClick={() => downloadIcs(data, includePrep)}>
+            <button type="button" className="workflow-primary-button" onClick={() => downloadIcs(selectedData, includePrep)}>
               <Download className="w-3.5 h-3.5" /> Download .ics
             </button>
             <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
@@ -173,7 +221,13 @@ export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOp
           </div>
         </div>
         <div className="wf-modal-body">
-          <CalendarTimeline data={data} includePrep={includePrep} onChange={onChange} />
+          <CalendarTimeline
+            data={data}
+            includePrep={includePrep}
+            onChange={onChange}
+            documents={documents}
+            onSelectedData={setSelectedData}
+          />
         </div>
       </div>
     </div>

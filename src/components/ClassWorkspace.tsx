@@ -5,7 +5,6 @@ import {
   Copy,
   Download,
   FileText,
-  MessageCircle,
   Plus,
   Search,
   Trash2,
@@ -79,10 +78,9 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
   const [filter, setFilter] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(data.items[0]?.id || null);
   const [sourcePage, setSourcePage] = useState(1);
-  const [chatInput, setChatInput] = useState('');
-  const [messages, setMessages] = useState<string[]>(['Ask me to find, review, or update an event.']);
   const [lastDeleted, setLastDeleted] = useState<SyllabusItem | null>(null);
   const [generatingPrepId, setGeneratingPrepId] = useState<string | null>(null);
+  const [prepError, setPrepError] = useState<string | null>(null);
   const [month, setMonth] = useState(() => {
     const first = data.items.map((i) => parseScheduleDate(i.dueDate)).filter((value): value is Date => Boolean(value)).sort((a, b) => a.getTime() - b.getTime())[0];
     const d = first || new Date();
@@ -128,61 +126,16 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
     setSelectedId(copy.id);
   };
 
-  const sendChat = () => {
-    const request = chatInput.trim();
-    if (!request) return;
-    const lower = request.toLowerCase();
-    const target = data.items.slice().sort((a, b) => b.title.length - a.title.length)
-      .find((item) => lower.includes(item.title.toLowerCase()) || lower.includes(item.type.toLowerCase())) || selected;
-    const dateMatch = request.match(/\b(20\d{2}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?\b/);
-    const weightMatch = request.match(/\b(?:weight|worth|counts for)\s*(?:is|=|to)?\s*(\d+(?:\.\d+)?)\s*%?/i);
-    const renameMatch = request.match(/\b(?:rename|retitle)\s+.+?\s+(?:to|as)\s+["“]?(.+?)["”]?$/i);
-    const descriptionMatch = request.match(/\bdescription\s*(?:to|=|:)\s*(.+)$/i);
-    if (!target) {
-      setMessages((current) => [...current, 'Mention an event title or type so I know which table row to change.']);
-    } else if (/(delete|remove)\b/.test(lower)) {
-      deleteEvent(target.id);
-      setMessages((current) => [...current, `Removed “${target.title}” from the table.`]);
-    } else if (renameMatch) {
-      editItem(target.id, { title: renameMatch[1].trim() });
-      setMessages((current) => [...current, `Renamed “${target.title}” to “${renameMatch[1].trim()}”.`]);
-    } else if (descriptionMatch) {
-      editItem(target.id, { description: descriptionMatch[1].trim() });
-      setMessages((current) => [...current, `Updated the description for “${target.title}”.`]);
-    } else if (dateMatch && /(move|change|reschedule|date|deadline|due)/.test(lower)) {
-      const dueDate = dateMatch[2] ? `${dateMatch[1]}T${dateMatch[2]}` : dateMatch[1];
-      editItem(target.id, { dueDate, reviewStatus: 'approved' });
-      setMessages((current) => [...current, `Updated “${target.title}” to ${dueDate.replace('T', ' ')}.`]);
-    } else if (weightMatch) {
-      editItem(target.id, { weight: `${weightMatch[1]}%` });
-      setMessages((current) => [...current, `Set “${target.title}” weight to ${weightMatch[1]}%.`]);
-    } else if (/(exclude|don't export|do not export|remove from export)/.test(lower)) {
-      editItem(target.id, { includeInExport: false });
-      setMessages((current) => [...current, `Excluded “${target.title}” from calendar export.`]);
-    } else if (/(include|export)/.test(lower)) {
-      editItem(target.id, { includeInExport: true });
-      setMessages((current) => [...current, `Included “${target.title}” in calendar export.`]);
-    } else if (/uncertain|review|approve|confirm/.test(lower)) {
-      const approved = /approve|confirm/.test(lower);
-      editItem(target.id, { reviewStatus: approved ? 'approved' : 'needs-review' });
-      setMessages((current) => [...current, `Marked “${target.title}” as ${approved ? 'approved' : 'needing review'}.`]);
-    } else if (/show|find|list/.test(lower) && /review|uncertain/.test(lower)) {
-      setMessages((current) => [...current, `${needsReview} event${needsReview === 1 ? '' : 's'} need review.`]);
-    } else {
-      setMessages((current) => [...current, 'Try “Move Midterm to 2026-11-04”, “Set Assignment 1 weight to 10%”, “Exclude Quiz from export”, or “Mark Exam approved”.']);
-    }
-    setChatInput('');
-  };
-
   const goToEvent = (id: string) => { setSelectedId(id); setTab('assignments'); };
   const viewInDocument = (item: SyllabusItem) => { setSelectedId(item.id); if (item.sourcePage) setSourcePage(item.sourcePage); setTab('documents'); };
 
   const generatePrep = async (item: SyllabusItem) => {
     setGeneratingPrepId(item.id);
+    setPrepError(null);
     try {
       await onGeneratePrep(item);
     } catch (error) {
-      setMessages((current) => [...current, error instanceof Error ? error.message : 'Unable to generate a study plan.']);
+      setPrepError(error instanceof Error ? error.message : 'Unable to generate a study plan.');
     } finally {
       setGeneratingPrepId(null);
     }
@@ -394,6 +347,7 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
                   >
                     {generatingPrepId === selected.id ? 'Generating study plan…' : selected.prepingInfo?.milestones?.length ? 'Regenerate study plan' : 'Generate study plan'}
                   </button>
+                  {prepError && <div className="wf-alert" style={{ marginTop: 10 }}>{prepError}</div>}
                   <label className="wf-label" htmlFor="loc">Location</label>
                   <input id="loc" className="wf-input" value={selected.location || ''} onChange={(e) => editItem(selected.id, { location: e.target.value })} />
                   <label className="wf-label" htmlFor="desc">Description</label>
@@ -410,22 +364,6 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
                 </div>
               </div>
             )}
-            <div className="workflow-card" style={{ marginTop: 16, padding: 16, background: 'var(--workflow-bg)' }}>
-              <div className="wf-row" style={{ padding: 0, alignItems: 'flex-start' }}>
-                <MessageCircle className="w-4 h-4" style={{ color: 'var(--workflow-accent)', marginTop: 2 }} />
-                <div>
-                  <h3 className="wf-h2">AI event assistant</h3>
-                  <p className="wf-small wf-muted" style={{ margin: '4px 0 0' }}>Ask me to change the event table. Changes are saved immediately.</p>
-                </div>
-              </div>
-              <div style={{ marginTop: 10, display: 'grid', gap: 8, maxHeight: 180, overflow: 'auto' }}>
-                {messages.map((message, i) => <p key={i} className="wf-small" style={{ margin: 0, padding: 10, borderRadius: 8, background: 'var(--workflow-surface)' }}>{message}</p>)}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="e.g. Move Midterm to 2026-11-04" aria-label="Ask the event assistant" className="wf-input" />
-                <button type="button" onClick={sendChat} aria-label="Send event assistant message" className="workflow-primary-button"><MessageCircle className="w-4 h-4" /></button>
-              </div>
-            </div>
           </div>
         )}
 
