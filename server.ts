@@ -175,7 +175,11 @@ function getPdfLinks(html: string, sourceUrl: URL): string[] {
 
 function parseModelJson(outputText: string): unknown {
   const fencedJson = outputText.match(/```(?:json)?\s*([\s\S]*?)\s*```/)?.[1];
-  const candidate = (fencedJson || outputText).trim();
+  const candidate = (fencedJson || outputText)
+    .replace(/^\uFEFF/, '')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .trim();
 
   try {
     return JSON.parse(candidate);
@@ -186,8 +190,27 @@ function parseModelJson(outputText: string): unknown {
 
     const end = Math.max(candidate.lastIndexOf('}'), candidate.lastIndexOf(']'));
     if (end < start) throw new Error('The model returned incomplete JSON.');
-    return JSON.parse(candidate.slice(start, end + 1));
+    const extracted = candidate
+      .slice(start, end + 1)
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ' ');
+    return JSON.parse(extracted);
   }
+}
+
+async function repairModelJson(outputText: string, context: string): Promise<unknown> {
+  const repairPrompt = `Repair the following model output into valid JSON.
+Return JSON only, with no Markdown or explanation. Preserve every value and key; only fix JSON syntax.
+It must satisfy this shape: ${context}
+
+MODEL OUTPUT:
+${outputText}`;
+  const response = await generateAnalysis([{ text: repairPrompt }], {
+    maxOutputTokens: Math.min(GEMINI_MAX_OUTPUT_TOKENS, 4096),
+    responseMimeType: 'application/json',
+  });
+  if (!response.text) throw new Error('The model returned an empty JSON repair response.');
+  return parseModelJson(response.text);
 }
 
 function normalizeAnalysisResult(value: unknown): Record<string, unknown> {
@@ -401,6 +424,47 @@ app.post('/api/scrape-website', async (req: Request, res: Response) => {
       error: 'Unable to scrape website',
       message: error?.message || 'The webpage could not be scraped.',
     });
+
+  }
+});
+
+app.get('/api/model-status', async (_req: Request, res: Response) => {
+  if (!hasGeminiApiKey || !geminiApiKey) {
+    return res.status(500).json({ error: 'Missing GEMINI_API_KEY', models: [] });
+  }
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiApiKey)}`
+    );
+    const payload = (await response.json()) as {
+      models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }>;
+      error?: { message?: string };
+    };
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: payload.error?.message || 'Google AI could not list models for this API key.',
+        models: [],
+      });
+    }
+    const models = (payload.models || [])
+      .filter((model) => model.name)
+      .map((model) => ({
+        name: model.name!.replace(/^models\//, ''),
+        displayName: model.displayName || model.name,
+        canGenerateContent: model.supportedGenerationMethods?.includes('generateContent') || false,
+      }));
+    return res.json({
+      configured: { primary: GEMINI_MODEL, fallback: GEMINI_FALLBACK_MODEL },
+      models,
+      primary: models.find((model) => model.name === GEMINI_MODEL) || null,
+      fallback: models.find((model) => model.name === GEMINI_FALLBACK_MODEL) || null,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : 'Unable to verify Google AI models.',
+      models: [],
+    });
   }
 });
 
@@ -431,28 +495,63 @@ app.post('/api/analyze-pdf', async (req: Request, res: Response) => {
     const cached = analysisCache.get(cacheKey);
     if (cached) return res.json({ success: true, data: cached, cached: true });
 
-    const promptText = `You are an academic document extraction specialist.
-Analyze the attached PDF syllabus, course document, calendar, schedule, or exam guide (${filename || 'document.pdf'}).
-Extract every dated academic event, including assignments, homework, exams, midterms, finals, quizzes, projects, labs, presentations, papers, lectures, meetings, breaks, and other important class events.
-Focus this pass only on finding and accurately structuring events. Do not generate study plans, preparation summaries, or milestones yet.
-Also extract a concise, student-friendly key information section for the course.
-Use only facts supported by the document. Never invent dates, times, locations, grading weights, policies, instructors, or materials.
-If a date or time is ambiguous, preserve the uncertainty in sourceQuote and set confidence to "low". If a time is missing, leave it absent rather than guessing.
+    const promptText = `You are a high-precision academic document parser for a student scheduling app.
+Analyze the entire document "${filename || 'document.pdf'}", including tables, headers, footnotes, appendices, and text near dates.
+This is the fast event-discovery pass. Do not generate study plans, revision advice, preparation summaries, or milestones.
 
-For each item, extract:
-1. id: A unique alphanumeric identifier (e.g., "item-1", "midterm-1", "proj-2")
-2. title: The exact title or name of the assignment/exam (e.g., "Midterm Exam 1", "Project 3: Neural Net Classifier")
-3. type: Classification, one of: "assignment", "exam", "quiz", "project", "midterm", "final", "lab", "homework", "presentation", "paper"
-4. dueDate: Event date in ISO format YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss. Do not add a time when the document does not provide one.
-5. weight: Weight towards final grade, e.g., "15%", "25%", "100 pts", "10%"
-6. description: Brief summary of instructions, coverage, and requirements
-7. location: Room, building, online platform, or other location when stated
-8. sourceQuote: Short verbatim evidence from the document supporting the event
-9. sourcePage: The 1-based PDF page containing the evidence when available; omit for website text or when unknown
-10. confidence: "high", "medium", or "low" based on how clearly the document states the event
-Also detect the courseName, courseCode, instructor, and semester from the syllabus header.
-For keyInfo, extract overview, meetingSchedule, location, gradingPolicy, readings, requiredMaterials, policies, officeHours, and importantNotes.
-Return valid JSON only. Ensure every date is valid ISO format and never append explanatory text to a date.`;
+OBJECTIVE
+Extract every distinct, supported academic event and concise course information. The document may be a syllabus,
+course outline, academic calendar, exam schedule, assignment sheet, LMS export, timetable, announcement, or mixed document.
+Find events even when dates are in tables, column headings, bullets, paragraphs, abbreviated labels, or weekly schedules.
+
+EVENTS TO INCLUDE
+Assignments, homework, problem sets, submissions, quizzes, tests, midterms, finals, exams, projects, checkpoints,
+demonstrations, labs, lab reports, presentations, papers, readings with an explicit date, lectures, meetings, reviews,
+holidays, breaks, cancellations, registration deadlines, and other relevant academic dates.
+Do not discard a date-only schedule entry when its academic context is clear. Do not turn arbitrary metadata or example
+dates into events. Do not merge distinct events sharing a date or duplicate the same event repeated in the document.
+
+DATE RULES
+- Use dueDate as YYYY-MM-DD or YYYY-MM-DDTHH:mm when a single event date is known; use an empty string when unavailable.
+- Use startDate/endDate only for an explicit date range; otherwise use empty strings.
+- Never invent a year, date, time, timezone, deadline, weight, or requirement.
+- Resolve missing years only when the term/year is unambiguous in the document.
+- A due date is not an issue/release date; an exam is not an assignment; a class meeting is not a deadline.
+- Preserve ambiguous or conflicting wording in dateText/sourceQuote and set confidence to "low".
+
+CLASSIFICATION
+Use exactly one type: assignment, exam, quiz, midterm, final, project, lab, homework, presentation, paper, lecture,
+meeting, reading, holiday, break, deadline, review, or other. Use the most specific supported type and never infer that
+an event is graded merely because it appears in a schedule.
+
+OUTPUT CONTRACT
+Return exactly one JSON object with an "items" array and "keyInfo" object. Return JSON only: no Markdown, comments, or prose.
+Each item must contain:
+{
+  "id": "stable unique ID such as event-001",
+  "title": "concise supported title",
+  "type": "one allowed type",
+  "dateText": "original date wording or empty string",
+  "dueDate": "YYYY-MM-DD or YYYY-MM-DDTHH:mm or empty string",
+  "startDate": "YYYY-MM-DD or empty string",
+  "endDate": "YYYY-MM-DD or empty string",
+  "weight": "explicit points/weight or empty string",
+  "description": "brief supported description or empty string",
+  "location": "explicit location or empty string",
+  "sourceQuote": "short verbatim evidence or empty string",
+  "sourcePage": 1,
+  "confidence": "high, medium, or low"
+}
+Use sourcePage only when known; omit it for website text or unknown pages. IDs must be unique and stable within this response.
+Source quotes must be verbatim and short. Confidence describes evidence quality, not plausibility.
+
+keyInfo must contain:
+{"courseName":"","courseCode":"","instructor":"","semester":"","overview":"","meetingSchedule":"","location":"",
+"gradingPolicy":"","readings":[],"requiredMaterials":[],"policies":[],"officeHours":"","importantNotes":[]}
+Use empty strings/arrays for unavailable values. Keep summaries concise and factual.
+
+Before returning, verify the entire document was considered, duplicates were reconciled, dates are real calendar dates,
+all types are allowed, every event has evidence when available, and no unsupported facts were added.`;
 
     let preprocessedText = documentText?.trim() || '';
     if (!preprocessedText && cleanBase64) {
@@ -486,7 +585,7 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
 
     const response = await generateAnalysis(contents, {
         maxOutputTokens: Math.min(GEMINI_MAX_OUTPUT_TOKENS, 4096),
-        responseMimeType: isGemmaModel ? undefined : 'application/json',
+        responseMimeType: 'application/json',
         responseSchema: isGemmaModel ? undefined : {
           type: Type.OBJECT,
           properties: {
@@ -518,38 +617,16 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
                   id: { type: Type.STRING, description: 'Unique identifier' },
                   title: { type: Type.STRING, description: 'Assignment or exam title' },
                   type: { type: Type.STRING, description: 'Type of item' },
-                  dueDate: { type: Type.STRING, description: 'Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss format' },
+                  dateText: { type: Type.STRING, description: 'Original date wording' },
+                  dueDate: { type: Type.STRING, description: 'Due date in YYYY-MM-DD or YYYY-MM-DDTHH:mm format, or empty string' },
+                  startDate: { type: Type.STRING, description: 'Start date for an explicit range, or empty string' },
+                  endDate: { type: Type.STRING, description: 'End date for an explicit range, or empty string' },
                   weight: { type: Type.STRING, description: 'Percentage or point weight' },
                   description: { type: Type.STRING, description: 'Summary of the assignment or exam' },
                   location: { type: Type.STRING, description: 'Room, building, platform, or location' },
                   sourceQuote: { type: Type.STRING, description: 'Short source evidence quote' },
                   sourcePage: { type: Type.INTEGER, description: '1-based source PDF page when available' },
                   confidence: { type: Type.STRING, description: 'high, medium, or low' },
-                  prepingInfo: {
-                    type: Type.OBJECT,
-                    description: 'Preparation time, schedule, and checklist',
-                    properties: {
-                      id: { type: Type.STRING, description: 'Prep session ID' },
-                      duration: { type: Type.STRING, description: 'Recommended prep time duration' },
-                      summary: { type: Type.STRING, description: 'Detailed study summary and guidelines' },
-                      prepDate: { type: Type.STRING, description: 'Recommended prep start date (YYYY-MM-DD)' },
-                      milestones: {
-                        type: Type.ARRAY,
-                        description: 'Step-by-step prep milestones leading up to deadline',
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            id: { type: Type.STRING },
-                            dayOffset: { type: Type.INTEGER, description: 'Days before dueDate' },
-                            title: { type: Type.STRING, description: 'Specific milestone task' },
-                            durationMinutes: { type: Type.INTEGER, description: 'Time in minutes for this session' },
-                          },
-                          required: ['id', 'title'],
-                        },
-                      },
-                    },
-                    required: ['id', 'duration', 'summary'],
-                  },
                 },
                 required: ['id', 'title', 'type', 'dueDate', 'weight'],
               },
@@ -564,7 +641,16 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
       throw new Error('Gemini API returned an empty response.');
     }
 
-    const parsedData = normalizeAnalysisResult(parseModelJson(outputText));
+    let parsedData: Record<string, unknown>;
+    try {
+      parsedData = normalizeAnalysisResult(parseModelJson(outputText));
+    } catch (parseError) {
+      console.warn('Model returned malformed JSON; requesting a syntax-only repair.', parseError);
+      parsedData = normalizeAnalysisResult(await repairModelJson(
+        outputText,
+        '{"items":[{"id":"string","title":"string","type":"string","dueDate":"string"}],"keyInfo":{}}'
+      ));
+    }
     analysisCache.set(cacheKey, parsedData);
     return res.json({
       success: true,
@@ -608,7 +694,7 @@ Do not invent facts not supported by the document.`;
       : '';
     const response = await generateAnalysis([{ text: `${context}${prompt}` }], {
       maxOutputTokens: Math.min(GEMINI_MAX_OUTPUT_TOKENS, 4096),
-      responseMimeType: isGemmaModel ? undefined : 'application/json',
+      responseMimeType: 'application/json',
       responseSchema: isGemmaModel ? undefined : {
         type: Type.OBJECT,
         properties: {
@@ -630,7 +716,16 @@ Do not invent facts not supported by the document.`;
       },
     });
     if (!response.text) throw new Error('Gemini API returned an empty preparation plan.');
-    const prep = parseModelJson(response.text);
+    let prep: unknown;
+    try {
+      prep = parseModelJson(response.text);
+    } catch (parseError) {
+      console.warn('Preparation response was malformed JSON; requesting a syntax-only repair.', parseError);
+      prep = await repairModelJson(
+        response.text,
+        '{"id":"string","duration":"string","summary":"string","prepDate":"string","milestones":[]}'
+      );
+    }
     if (!prep || typeof prep !== 'object' || Array.isArray(prep)) throw new Error('The model returned an invalid preparation plan.');
     const normalizedPrep = prep as Record<string, unknown>;
     prepCache.set(cacheKey, normalizedPrep);

@@ -314,7 +314,7 @@ export default function App() {
   );
 
   return (
-    <div className="workflow-shell">
+    <div className={`workflow-shell ${view === 'dashboard' && !syllabusData && showLanding ? 'landing-mode' : ''}`}>
       <aside className="workflow-sidebar" aria-label="Primary navigation">
         <div className="workflow-logo">
           <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
