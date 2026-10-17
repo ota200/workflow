@@ -11,6 +11,7 @@ export const sampleSyllabusData: SyllabusAnalysisResult = {
     meetingSchedule: 'Tuesdays and Thursdays, 10:00 AM–11:30 AM',
     location: 'Soda Hall 306',
     gradingPolicy: 'Assignments 30%, midterm 22%, final project 25%, quizzes 5%, final exam 18%.',
+    readings: ['Course notes: Linear Models and Optimization', 'Bishop, Pattern Recognition and Machine Learning, Chapters 1–6'],
     requiredMaterials: ['Python 3 with NumPy and scikit-learn', 'Course lecture notes and problem sets'],
     policies: ['Late submissions follow the course syllabus policy.', 'Collaboration must be acknowledged in submissions.'],
     officeHours: 'Wednesday, 2:00 PM–4:00 PM by appointment',

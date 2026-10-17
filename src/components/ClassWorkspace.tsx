@@ -12,6 +12,7 @@ import {
   Undo2,
 } from 'lucide-react';
 import { SyllabusAnalysisResult, SyllabusItem } from '../types/syllabus';
+import { CourseKeyInfoCard } from './CourseKeyInfoCard';
 
 function colorOf(type: string) {
   const colors: Record<string, string> = {
@@ -30,6 +31,8 @@ interface ClassWorkspaceProps {
   onChange: (data: SyllabusAnalysisResult) => void;
   onOpenJson: () => void;
   onOpenCalendar: () => void;
+  onAddDocument: () => void;
+  onFinish: () => void;
   onReset: () => void;
   pdfData?: string;
   includePrep?: boolean;
@@ -94,7 +97,8 @@ function downloadIcs(data: SyllabusAnalysisResult, includePrep: boolean) {
 const MONTH_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
-  data, onChange, onOpenJson, onOpenCalendar, onReset, pdfData, includePrep = true,
+  data, onChange, onOpenJson, onOpenCalendar, onReset, onFinish, pdfData, includePrep = true,
+  onAddDocument,
 }) => {
   const [tab, setTab] = useState<WorkspaceTab>('assignments');
   const [query, setQuery] = useState('');
@@ -153,15 +157,44 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
     const request = chatInput.trim();
     if (!request) return;
     const lower = request.toLowerCase();
-    const target = data.items.find((item) => lower.includes(item.title.toLowerCase().slice(0, 18)) || lower.includes(item.type.toLowerCase()));
-    const dateMatch = request.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
-    if (target && dateMatch && /(move|change|reschedule|date)/.test(lower)) {
-      editItem(target.id, { dueDate: dateMatch[1], reviewStatus: 'approved' });
-      setMessages((current) => [...current, `Updated “${target.title}” to ${dateMatch[1]}.`]);
-    } else if (/uncertain|review/.test(lower)) {
+    const target = data.items.slice().sort((a, b) => b.title.length - a.title.length)
+      .find((item) => lower.includes(item.title.toLowerCase()) || lower.includes(item.type.toLowerCase())) || selected;
+    const dateMatch = request.match(/\b(20\d{2}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?\b/);
+    const weightMatch = request.match(/\b(?:weight|worth|counts for)\s*(?:is|=|to)?\s*(\d+(?:\.\d+)?)\s*%?/i);
+    const renameMatch = request.match(/\b(?:rename|retitle)\s+.+?\s+(?:to|as)\s+["“]?(.+?)["”]?$/i);
+    const descriptionMatch = request.match(/\bdescription\s*(?:to|=|:)\s*(.+)$/i);
+    if (!target) {
+      setMessages((current) => [...current, 'Mention an event title or type so I know which table row to change.']);
+    } else if (/(delete|remove)\b/.test(lower)) {
+      deleteEvent(target.id);
+      setMessages((current) => [...current, `Removed “${target.title}” from the table.`]);
+    } else if (renameMatch) {
+      editItem(target.id, { title: renameMatch[1].trim() });
+      setMessages((current) => [...current, `Renamed “${target.title}” to “${renameMatch[1].trim()}”.`]);
+    } else if (descriptionMatch) {
+      editItem(target.id, { description: descriptionMatch[1].trim() });
+      setMessages((current) => [...current, `Updated the description for “${target.title}”.`]);
+    } else if (dateMatch && /(move|change|reschedule|date|deadline|due)/.test(lower)) {
+      const dueDate = dateMatch[2] ? `${dateMatch[1]}T${dateMatch[2]}` : dateMatch[1];
+      editItem(target.id, { dueDate, reviewStatus: 'approved' });
+      setMessages((current) => [...current, `Updated “${target.title}” to ${dueDate.replace('T', ' ')}.`]);
+    } else if (weightMatch) {
+      editItem(target.id, { weight: `${weightMatch[1]}%` });
+      setMessages((current) => [...current, `Set “${target.title}” weight to ${weightMatch[1]}%.`]);
+    } else if (/(exclude|don't export|do not export|remove from export)/.test(lower)) {
+      editItem(target.id, { includeInExport: false });
+      setMessages((current) => [...current, `Excluded “${target.title}” from calendar export.`]);
+    } else if (/(include|export)/.test(lower)) {
+      editItem(target.id, { includeInExport: true });
+      setMessages((current) => [...current, `Included “${target.title}” in calendar export.`]);
+    } else if (/uncertain|review|approve|confirm/.test(lower)) {
+      const approved = /approve|confirm/.test(lower);
+      editItem(target.id, { reviewStatus: approved ? 'approved' : 'needs-review' });
+      setMessages((current) => [...current, `Marked “${target.title}” as ${approved ? 'approved' : 'needing review'}.`]);
+    } else if (/show|find|list/.test(lower) && /review|uncertain/.test(lower)) {
       setMessages((current) => [...current, `${needsReview} event${needsReview === 1 ? '' : 's'} need review.`]);
     } else {
-      setMessages((current) => [...current, 'I can apply an unambiguous date change (for example, “Move Midterm to 2026-11-04”) or show events needing review.']);
+      setMessages((current) => [...current, 'Try “Move Midterm to 2026-11-04”, “Set Assignment 1 weight to 10%”, “Exclude Quiz from export”, or “Mark Exam approved”.']);
     }
     setChatInput('');
   };
@@ -230,6 +263,8 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           <button type="button" className="wf-ghost-button" onClick={onOpenJson}>View JSON</button>
           <button type="button" className="workflow-secondary-button" onClick={onOpenCalendar}>Preview export</button>
+          <button type="button" className="workflow-secondary-button" onClick={onAddDocument}>Add document</button>
+          <button type="button" className="workflow-primary-button" onClick={onFinish}>Finish review</button>
           <button type="button" className="workflow-primary-button" disabled={!included.length} onClick={() => downloadIcs(data, includePrep)}>
             <Download className="w-3.5 h-3.5" /> Download .ics ({included.length})
           </button>
@@ -356,36 +391,96 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {tab === 'calendar' && <div style={{ padding: 16 }}>{renderMonth()}</div>}
-
-        {tab === 'overview' && (
-          <div style={{ padding: 16, display: 'grid', gap: 20 }} className="lg:grid-cols-[1fr_320px]">
-            <div>
-              <h3 className="wf-h2">Course overview</h3>
-              <p className="wf-muted" style={{ marginTop: 6, maxWidth: '65ch' }}>{data.keyInfo?.overview || 'Overview unavailable. Add it in Course details.'}</p>
-              <h3 className="wf-h2" style={{ marginTop: 24 }}>Upcoming deadlines</h3>
-              <div style={{ marginTop: 6 }}>
-                {data.items.filter((item) => item.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5).map((item) => (
-                  <button key={item.id} type="button" onClick={() => goToEvent(item.id)} className="wf-row" style={{ width: '100%', background: 'none', border: 0, borderBottom: '1px solid var(--workflow-line)', textAlign: 'left', justifyContent: 'space-between' }}>
-                    <span><span className="wf-dot" style={{ background: colorOf(item.type), marginRight: 8 }} />{item.title}</span>
-                    <span className="wf-small wf-muted">{item.dueDate.slice(0, 16).replace('T', ' ')}</span>
-                  </button>
-                ))}
+            <div className="workflow-card" style={{ marginTop: 16, padding: 16, background: 'var(--workflow-bg)' }}>
+              <div className="wf-row" style={{ padding: 0, alignItems: 'flex-start' }}>
+                <MessageCircle className="w-4 h-4" style={{ color: 'var(--workflow-accent)', marginTop: 2 }} />
+                <div>
+                  <h3 className="wf-h2">AI event assistant</h3>
+                  <p className="wf-small wf-muted" style={{ margin: '4px 0 0' }}>Ask me to change the event table. Changes are saved immediately.</p>
+                </div>
               </div>
-            </div>
-            <aside style={{ border: '1px solid var(--workflow-line)', borderRadius: 12, padding: 16, background: 'var(--workflow-bg)', alignSelf: 'start' }}>
-              <h3 className="wf-h2">Review assistant</h3>
               <div style={{ marginTop: 10, display: 'grid', gap: 8, maxHeight: 180, overflow: 'auto' }}>
                 {messages.map((message, i) => <p key={i} className="wf-small" style={{ margin: 0, padding: 10, borderRadius: 8, background: 'var(--workflow-surface)' }}>{message}</p>)}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="Ask about this course" aria-label="Message" className="wf-input" />
-                <button type="button" onClick={sendChat} aria-label="Send message" className="workflow-primary-button"><MessageCircle className="w-4 h-4" /></button>
+                <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendChat()} placeholder="e.g. Move Midterm to 2026-11-04" aria-label="Ask the event assistant" className="wf-input" />
+                <button type="button" onClick={sendChat} aria-label="Send event assistant message" className="workflow-primary-button"><MessageCircle className="w-4 h-4" /></button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {tab === 'calendar' && (
+          <div style={{ padding: 16, display: 'grid', gap: 16 }} className="lg:grid-cols-[minmax(0,1fr)_300px]">
+            <div>{renderMonth()}</div>
+            <aside className="workflow-card" style={{ padding: 16, alignSelf: 'start' }}>
+              <h3 className="wf-h2">Calendar export</h3>
+              <p className="wf-small wf-muted" style={{ margin: '6px 0 14px' }}>
+                {included.length} selected event{included.length === 1 ? '' : 's'} will be included.
+              </p>
+              <button type="button" className="workflow-primary-button" onClick={() => downloadIcs(data, includePrep)} disabled={!included.length}>
+                <Download className="w-3.5 h-3.5" /> Download .ics
+              </button>
+              <button type="button" className="workflow-secondary-button" style={{ width: '100%', marginTop: 8 }} onClick={onOpenCalendar}>
+                Open timeline preview
+              </button>
             </aside>
+          </div>
+        )}
+
+        {tab === 'overview' && (
+          <div style={{ padding: 16, display: 'grid', gap: 20 }}>
+            <div className="workflow-card" style={{ padding: 16 }}>
+              <div className="wf-row" style={{ padding: 0, alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p className="wf-small wf-muted" style={{ margin: 0 }}>Course workspace</p>
+                  <h3 className="wf-h2" style={{ marginTop: 4 }}>{data.courseName || 'Untitled course'}</h3>
+                  <p className="wf-muted" style={{ margin: '4px 0 0' }}>
+                    {[data.courseCode, data.instructor, data.semester].filter(Boolean).join(' · ') || 'Course metadata was not found in the source.'}
+                  </p>
+                </div>
+                <span className="wf-tag accent">{data.items.length} events</span>
+              </div>
+            </div>
+            <CourseKeyInfoCard info={data.keyInfo} />
+            <div style={{ display: 'grid', gap: 20 }} className="lg:grid-cols-[1fr_320px]">
+              <div>
+                <h3 className="wf-h2">Schedule at a glance</h3>
+                <div className="wf-row" style={{ padding: '12px 0', gap: 8, flexWrap: 'wrap' }}>
+                  {Object.entries(data.items.reduce<Record<string, number>>((counts, item) => {
+                    const type = item.type || 'Other';
+                    counts[type] = (counts[type] || 0) + 1;
+                    return counts;
+                  }, {})).map(([type, count]) => (
+                    <span className="wf-tag" key={type} style={{ borderColor: colorOf(type), color: colorOf(type) }}>
+                      {type}: {count}
+                    </span>
+                  ))}
+                  <span className={`wf-tag ${needsReview ? 'warn' : 'ok'}`}>
+                    {needsReview ? `${needsReview} need review` : 'All events reviewed'}
+                  </span>
+                </div>
+                <h3 className="wf-h2" style={{ marginTop: 24 }}>Upcoming deadlines</h3>
+                <div style={{ marginTop: 6 }}>
+                  {data.items.filter((item) => item.dueDate).slice().sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 8).map((item) => (
+                    <button key={item.id} type="button" onClick={() => goToEvent(item.id)} className="wf-row" style={{ width: '100%', background: 'none', border: 0, borderBottom: '1px solid var(--workflow-line)', textAlign: 'left', justifyContent: 'space-between' }}>
+                      <span><span className="wf-dot" style={{ background: colorOf(item.type), marginRight: 8 }} />{item.title}</span>
+                      <span className="wf-small wf-muted">{item.dueDate.slice(0, 16).replace('T', ' ')}</span>
+                    </button>
+                  ))}
+                  {!data.items.some((item) => item.dueDate) && <p className="wf-muted wf-small">No dated events were extracted.</p>}
+                </div>
+              </div>
+              <aside style={{ border: '1px solid var(--workflow-line)', borderRadius: 12, padding: 16, background: 'var(--workflow-bg)', alignSelf: 'start' }}>
+                <h3 className="wf-h2">Extraction summary</h3>
+                <div style={{ display: 'grid', gap: 8, marginTop: 12 }} className="wf-small">
+                  <div className="wf-row" style={{ padding: 0, justifyContent: 'space-between' }}><span className="wf-muted">Included in export</span><strong>{included.length}</strong></div>
+                  <div className="wf-row" style={{ padding: 0, justifyContent: 'space-between' }}><span className="wf-muted">Needs review</span><strong>{needsReview}</strong></div>
+                  <div className="wf-row" style={{ padding: 0, justifyContent: 'space-between' }}><span className="wf-muted">With source evidence</span><strong>{data.items.filter((item) => item.sourceQuote || item.sourcePage).length}</strong></div>
+                  <div className="wf-row" style={{ padding: 0, justifyContent: 'space-between' }}><span className="wf-muted">Source</span><strong className="truncate" style={{ maxWidth: 150 }}>{data.sourceDocument || 'Unknown'}</strong></div>
+                </div>
+              </aside>
+            </div>
           </div>
         )}
 
@@ -427,7 +522,16 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
         )}
 
         {tab === 'details' && (
-          <div style={{ padding: 16, display: 'grid', gap: 14 }} className="sm:grid-cols-2">
+          <div style={{ padding: 16 }}>
+            <div className="workflow-card" style={{ padding: 20 }}>
+              <div style={{ marginBottom: 18 }}>
+                <p className="wf-small wf-muted" style={{ margin: 0 }}>Course information</p>
+                <h2 className="wf-h2" style={{ fontSize: 20, marginTop: 4 }}>Course details</h2>
+                <p className="wf-muted" style={{ margin: '6px 0 0' }}>
+                  Review and update the information extracted from your syllabus.
+                </p>
+              </div>
+              <div style={{ display: 'grid', gap: 14 }} className="sm:grid-cols-2">
             {([['Course name', 'courseName'], ['Course code', 'courseCode'], ['Instructor', 'instructor'], ['Semester', 'semester']] as const).map(([label, key]) => (
               <label key={key} className="wf-small" style={{ fontWeight: 500 }}>
                 <span className="wf-muted">{label}</span>
@@ -438,13 +542,47 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
               <span className="wf-muted">Meeting schedule</span>
               <textarea rows={2} value={data.keyInfo?.meetingSchedule || ''} onChange={(e) => onChange({ ...data, keyInfo: { ...data.keyInfo, meetingSchedule: e.target.value } })} className="wf-input" style={{ marginTop: 4 }} />
             </label>
-            <label className="wf-small sm:col-span-2" style={{ fontWeight: 500 }}>
-              <span className="wf-muted">Overview</span>
-              <textarea rows={3} value={data.keyInfo?.overview || ''} onChange={(e) => onChange({ ...data, keyInfo: { ...data.keyInfo, overview: e.target.value } })} className="wf-input" style={{ marginTop: 4 }} />
-            </label>
+            {([
+              ['Location', 'location'],
+              ['Grading / weight policy', 'gradingPolicy'],
+              ['Office hours', 'officeHours'],
+            ] as const).map(([label, key]) => (
+              <label key={key} className="wf-small" style={{ fontWeight: 500 }}>
+                <span className="wf-muted">{label}</span>
+                <textarea
+                  rows={2}
+                  value={data.keyInfo?.[key] || ''}
+                  onChange={(e) => onChange({ ...data, keyInfo: { ...data.keyInfo, [key]: e.target.value } })}
+                  className="wf-input"
+                  style={{ marginTop: 4 }}
+                />
+              </label>
+            ))}
+            {([
+              ['Readings', 'readings'],
+              ['Required materials', 'requiredMaterials'],
+              ['Policies', 'policies'],
+              ['Important notes', 'importantNotes'],
+            ] as const).map(([label, key]) => (
+              <label key={key} className="wf-small" style={{ fontWeight: 500 }}>
+                <span className="wf-muted">{label} (one per line)</span>
+                <textarea
+                  rows={4}
+                  value={(data.keyInfo?.[key] || []).join('\n')}
+                  onChange={(e) => onChange({
+                    ...data,
+                    keyInfo: { ...data.keyInfo, [key]: e.target.value.split('\n').map((value) => value.trim()).filter(Boolean) },
+                  })}
+                  className="wf-input"
+                  style={{ marginTop: 4 }}
+                />
+              </label>
+            ))}
             <div className="sm:col-span-2" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: '1px solid var(--workflow-line)' }}>
               <span className="wf-small wf-muted">Missing information stays unavailable until you add it.</span>
               <button type="button" onClick={onReset} className="wf-ghost-button danger">Remove course</button>
+            </div>
+              </div>
             </div>
           </div>
         )}
