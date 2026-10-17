@@ -1,34 +1,52 @@
 import React, { useState } from 'react';
-import {
-  Calendar,
-  Sparkles,
-  FileText,
-  Clock,
-  Download,
-  FileCode,
-  ShieldCheck,
-  CheckCircle2,
-  ExternalLink,
-  BookOpen,
-  LayoutDashboard,
-  FileStack,
-  Settings,
-} from 'lucide-react';
+import { Calendar, CheckCircle2, FileStack, LayoutDashboard, Settings } from 'lucide-react';
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
-import { SyllabusSummaryCard } from './components/SyllabusSummaryCard';
-import { SyllabusItemList } from './components/SyllabusItemList';
 import { JsonViewerModal } from './components/JsonViewerModal';
 import { CalendarPreviewModal } from './components/CalendarPreviewModal';
-import { CourseKeyInfoCard } from './components/CourseKeyInfoCard';
 import { ClassWorkspace } from './components/ClassWorkspace';
+
+type View = 'dashboard' | 'documents' | 'calendar' | 'settings';
+type Item = SyllabusAnalysisResult['items'][number];
+
+const STORAGE_KEY = 'workflow-course-workspace';
+const SETTINGS_KEY = 'workflow-settings';
+
+const withReviewDefaults = (items: Item[]) =>
+  items.map((item) => ({
+    ...item,
+    reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
+    includeInExport: item.includeInExport !== false,
+  }));
+
+const NAV: Array<[View, string, React.ComponentType<{ className?: string }>]> = [
+  ['dashboard', 'Dashboard', LayoutDashboard],
+  ['documents', 'My Documents', FileStack],
+  ['calendar', 'Calendar Preview', Calendar],
+  ['settings', 'Settings', Settings],
+];
+
+const STEPS = ['Upload', 'Extract', 'Review', 'Export'];
+
+function Stepper({ current }: { current: number }) {
+  return (
+    <div className="wf-steps" aria-label="Workflow progress">
+      {STEPS.map((step, i) => (
+        <div key={step} className={`wf-step ${i === current ? 'on' : i < current ? 'done' : ''}`}>
+          <b>{i < current ? '✓' : i + 1}</b>
+          <span>{step}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function App() {
   const [syllabusData, setSyllabusData] = useState<SyllabusAnalysisResult | null>(() => {
     try {
-      const saved = localStorage.getItem('workflow-course-workspace');
-      return saved ? JSON.parse(saved) as SyllabusAnalysisResult : null;
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? (JSON.parse(saved) as SyllabusAnalysisResult) : null;
     } catch {
       return null;
     }
@@ -36,10 +54,22 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sourcePdf, setSourcePdf] = useState<string | null>(null);
+  const [view, setView] = useState<View>('dashboard');
+  const [includePrep, setIncludePrep] = useState<boolean>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}').includePrep !== false;
+    } catch {
+      return true;
+    }
+  });
 
-  // Modals
   const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
   const [isCalendarPreviewOpen, setIsCalendarPreviewOpen] = useState(false);
+
+  const save = (data: SyllabusAnalysisResult) => {
+    setSyllabusData(data);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  };
 
   const handleAnalyzePdf = async (base64Data: string, filename: string) => {
     setIsAnalyzing(true);
@@ -49,40 +79,26 @@ export default function App() {
     try {
       const response = await fetch('/api/analyze-pdf', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          pdfBase64: base64Data,
-          filename,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfBase64: base64Data, filename }),
       });
-
       const result = await response.json();
-
       if (!response.ok) {
         throw new Error(result.message || result.error || 'Failed to analyze PDF with Gemini API');
       }
-
       if (result.data && Array.isArray(result.data.items)) {
-        const analyzedData = {
+        save({
           ...result.data,
           analyzedAt: new Date().toISOString(),
           sourceDocument: filename,
-          items: result.data.items.map((item: SyllabusAnalysisResult['items'][number]) => ({
-            ...item,
-            reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
-            includeInExport: item.includeInExport !== false,
-          })),
-        };
-        setSyllabusData(analyzedData);
-        localStorage.setItem('workflow-course-workspace', JSON.stringify(analyzedData));
+          items: withReviewDefaults(result.data.items),
+        });
       } else {
         throw new Error('Invalid response structure received from Gemini API.');
       }
     } catch (err: any) {
       console.error('Analysis error:', err);
-      setError(err?.message || 'Error communicating with Gemini API. Please check your document and try again.');
+      setError(err?.message || 'We couldn’t read this document. Check the file and try again.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -117,20 +133,13 @@ export default function App() {
       if (!analyzeResponse.ok) {
         throw new Error(result.message || result.error || 'Failed to analyze website content.');
       }
-
       if (result.data && Array.isArray(result.data.items)) {
-        const analyzedData = {
+        save({
           ...result.data,
           analyzedAt: new Date().toISOString(),
           sourceDocument: scraped.title || url,
-          items: result.data.items.map((item: SyllabusAnalysisResult['items'][number]) => ({
-            ...item,
-            reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
-            includeInExport: item.includeInExport !== false,
-          })),
-        };
-        setSyllabusData(analyzedData);
-        localStorage.setItem('workflow-course-workspace', JSON.stringify(analyzedData));
+          items: withReviewDefaults(result.data.items),
+        });
       } else {
         throw new Error('Invalid response structure received from website analysis.');
       }
@@ -145,20 +154,38 @@ export default function App() {
 
   const handleLoadSample = () => {
     setError(null);
-    setSyllabusData({ ...sampleSyllabusData, analyzedAt: new Date().toISOString(), sourceDocument: 'sample-syllabus.pdf' });
+    setSyllabusData({
+      ...sampleSyllabusData,
+      analyzedAt: new Date().toISOString(),
+      sourceDocument: 'sample-syllabus.pdf',
+    });
   };
 
   const handleReset = () => {
     setSyllabusData(null);
     setError(null);
     setSourcePdf(null);
-    localStorage.removeItem('workflow-course-workspace');
+    setView('dashboard');
+    localStorage.removeItem(STORAGE_KEY);
   };
 
-  const handleWorkspaceChange = (nextData: SyllabusAnalysisResult) => {
-    setSyllabusData(nextData);
-    localStorage.setItem('workflow-course-workspace', JSON.stringify(nextData));
+  const toggleIncludePrep = (value: boolean) => {
+    setIncludePrep(value);
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ includePrep: value }));
   };
+
+  const needsReview = syllabusData
+    ? syllabusData.items.filter((i) => (i.reviewStatus || (i.confidence === 'low' ? 'needs-review' : 'reviewed')) === 'needs-review').length
+    : 0;
+
+  const EmptyState = ({ text }: { text: string }) => (
+    <div className="workflow-card wf-empty">
+      <p style={{ margin: '0 0 14px' }}>{text}</p>
+      <button type="button" className="workflow-primary-button" onClick={() => setView('dashboard')}>
+        Upload a PDF
+      </button>
+    </div>
+  );
 
   return (
     <div className="workflow-shell">
@@ -167,204 +194,154 @@ export default function App() {
           <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
           Workflow
         </div>
-        <button className="workflow-nav-item active" type="button">
-          <LayoutDashboard className="w-4 h-4" />
-          Dashboard
-        </button>
-        <button className="workflow-nav-item" type="button">
-          <FileStack className="w-4 h-4" />
-          My Documents
-        </button>
-        <button
-          className={`workflow-nav-item ${syllabusData ? 'active' : ''}`}
-          type="button"
-          onClick={() => syllabusData && setIsCalendarPreviewOpen(true)}
-        >
-          <Calendar className="w-4 h-4" />
-          Calendar Preview
-        </button>
-        <button className="workflow-nav-item" type="button">
-          <Settings className="w-4 h-4" />
-          Settings
-        </button>
+        {NAV.map(([key, label, Icon]) => (
+          <button
+            key={key}
+            type="button"
+            className={`workflow-nav-item ${view === key ? 'active' : ''}`}
+            aria-current={view === key ? 'page' : undefined}
+            onClick={() => setView(key)}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        ))}
         <div className="workflow-profile">
-          <div className="workflow-avatar">AI</div>
+          <div className="workflow-avatar">ME</div>
           <div>
-            <div className="text-sm font-medium">Personal</div>
-            <div className="text-xs text-slate-500">Calendar workspace</div>
+            <div style={{ fontWeight: 500 }}>Personal</div>
+            <div className="wf-small wf-muted">Calendar workspace</div>
           </div>
         </div>
       </aside>
 
       <div className="workflow-content">
-      {/* Header */}
-      <header className="workflow-header border-b border-slate-800 bg-slate-900/70 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
-              <Calendar className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="font-bold text-sm sm:text-base text-white tracking-tight">
-                  Syllabus &amp; Exam Prep AI
-                </h1>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-950 border border-blue-800 text-blue-300 font-medium">
-                  Gemini 3.8 Flash
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400 hidden sm:block">
-                Extract assignments, exams, weights &amp; export iCal (.ics) + JSON
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {syllabusData ? (
-              <>
-                <button
-                  onClick={() => setIsCalendarPreviewOpen(true)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Calendar className="w-3.5 h-3.5 text-purple-400" />
-                  <span className="hidden sm:inline">Timeline Preview</span>
-                </button>
-
-                <button
-                  onClick={() => setIsJsonModalOpen(true)}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <FileCode className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="hidden sm:inline">View JSON</span>
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleLoadSample}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-blue-600/20 transition-all cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
-                <span>Load Sample Syllabus</span>
-              </button>
-            )}
-          </div>
+        <div className="workflow-mobilebar">
+          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
+          Workflow
         </div>
-      </header>
 
-      {/* Main Content */}
-      <main className="workflow-main flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
-        {!syllabusData ? (
-          <div className="space-y-8 max-w-3xl mx-auto py-6">
-            {/* Hero text */}
-            <div className="text-center space-y-3">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-950/80 border border-blue-800/80 text-blue-300 text-xs font-medium">
-                <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-                <span>Automated Course Schedule &amp; Study Prep Intelligence</span>
-              </div>
-              <h2 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
-                Turn your course syllabus into an actionable study calendar
-              </h2>
-              <p className="text-sm text-slate-400 max-w-xl mx-auto leading-relaxed">
-                Upload any syllabus PDF. Gemini AI extracts every exam, assignment, due date, grading weight, and generates a personalized preparation plan with milestone study blocks downloadable as <strong className="text-slate-200">.ics</strong> and <strong className="text-slate-200">JSON</strong>.
+        <main className="workflow-main">
+          {view === 'dashboard' && !syllabusData && (
+            <>
+              <h1 className="wf-h1">Turn documents into your schedule.</h1>
+              <p className="wf-sub">
+                Upload a PDF and Workflow finds the deadlines, exams and classes in it. You check them,
+                then download one calendar file for Google, Apple or Outlook.
               </p>
-            </div>
+              <Stepper current={0} />
+              <PdfUploader
+                onAnalyzePdf={handleAnalyzePdf}
+                onAnalyzeWebsite={handleAnalyzeWebsite}
+                onLoadSample={handleLoadSample}
+                isAnalyzing={isAnalyzing}
+                error={error}
+              />
+            </>
+          )}
 
-            {/* Uploader Component */}
-            <PdfUploader
-              onAnalyzePdf={handleAnalyzePdf}
-              onAnalyzeWebsite={handleAnalyzeWebsite}
-              onLoadSample={handleLoadSample}
-              isAnalyzing={isAnalyzing}
-              error={error}
-            />
+          {view === 'dashboard' && syllabusData && (
+            <>
+              <Stepper current={2} />
+              <ClassWorkspace
+                data={syllabusData}
+                pdfData={sourcePdf || undefined}
+                onChange={save}
+                onOpenJson={() => setIsJsonModalOpen(true)}
+                onOpenCalendar={() => setIsCalendarPreviewOpen(true)}
+                onReset={handleReset}
+              />
+            </>
+          )}
 
-            {/* Feature Highlights Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
-              <div className="p-4 bg-slate-900/60 border border-slate-800/80 rounded-2xl space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <FileText className="w-4 h-4 text-blue-400" />
-                  <span>Precise Extraction</span>
+          {view === 'documents' && (
+            <>
+              <h1 className="wf-h1">My documents</h1>
+              <p className="wf-sub">Every PDF you’ve converted, with its status.</p>
+              {syllabusData ? (
+                <div className="workflow-card">
+                  <div className="wf-row">
+                    <div className="wf-fileicon">PDF</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500 }} className="truncate">
+                        {syllabusData.sourceDocument || syllabusData.courseName || 'Untitled document'}
+                      </div>
+                      <div className="wf-small wf-muted">
+                        {syllabusData.items.length} events
+                        {syllabusData.analyzedAt ? ` · ${new Date(syllabusData.analyzedAt).toLocaleDateString()}` : ''}
+                      </div>
+                    </div>
+                    <span className={`wf-tag ${needsReview ? 'warn' : 'ok'}`}>
+                      {needsReview ? `${needsReview} need review` : 'Reviewed'}
+                    </span>
+                    <button type="button" className="workflow-secondary-button" onClick={() => setView('dashboard')}>
+                      Open
+                    </button>
+                  </div>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Extracts item ID, title, type (assignment, exam, quiz, project), exact due date, and grading weight percentage.
-                </p>
-              </div>
+              ) : (
+                <EmptyState text="No documents yet. Upload your first PDF to see it here." />
+              )}
+            </>
+          )}
 
-              <div className="p-4 bg-slate-900/60 border border-slate-800/80 rounded-2xl space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <Clock className="w-4 h-4 text-purple-400" />
-                  <span>Smart Prep Recommendations</span>
+          {view === 'calendar' && (
+            <>
+              <h1 className="wf-h1">Calendar preview</h1>
+              <p className="wf-sub">Upcoming events from your imported document, in date order.</p>
+              {syllabusData ? (
+                <div className="workflow-card">
+                  <p style={{ margin: '0 0 14px' }}>
+                    Preview your imported events and export them to your calendar.
+                  </p>
+                  <button
+                    type="button"
+                    className="workflow-primary-button"
+                    onClick={() => setIsCalendarPreviewOpen(true)}
+                  >
+                    Open calendar preview
+                  </button>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Generates preparation duration, strategic study summaries, prep start dates, and progressive milestones.
-                </p>
-              </div>
+              ) : (
+                <EmptyState text="Nothing to preview yet. Upload a PDF to see its events." />
+              )}
+            </>
+          )}
 
-              <div className="p-4 bg-slate-900/60 border border-slate-800/80 rounded-2xl space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <Calendar className="w-4 h-4 text-emerald-400" />
-                  <span>iCal (.ics) &amp; JSON Export</span>
-                </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  One-click export directly into Google Calendar, Apple Calendar, and Outlook, or programmatic JSON for your apps.
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center gap-2" aria-label="Workflow progress">
-              {['Upload', 'Extract', 'Review', 'Export'].map((step, index) => (
-                <div
-                  key={step}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-800/70 bg-emerald-950/30 text-xs text-emerald-300"
-                >
-                  <span className="w-5 h-5 rounded-full bg-emerald-600 text-white grid place-items-center text-[10px] font-bold">
-                    {index < 2 ? '✓' : index + 1}
+          {view === 'settings' && (
+            <>
+              <h1 className="wf-h1">Settings</h1>
+              <p className="wf-sub">Defaults used when you export.</p>
+              <div className="workflow-card" style={{ maxWidth: 520, padding: 16 }}>
+                <label style={{ display: 'flex', gap: 12, alignItems: 'flex-start', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={includePrep}
+                    onChange={(e) => toggleIncludePrep(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    <span style={{ fontWeight: 500, display: 'block' }}>Include prep and study blocks</span>
+                    <span className="wf-small wf-muted">
+                      Adds “prep starts” and study-block events to the .ics file alongside due dates.
+                    </span>
                   </span>
-                  <span>{step}</span>
-                </div>
-              ))}
-            </div>
+                </label>
+              </div>
+            </>
+          )}
+        </main>
 
-            <ClassWorkspace
-              data={syllabusData}
-              pdfData={sourcePdf || undefined}
-              onChange={handleWorkspaceChange}
-              onOpenJson={() => setIsJsonModalOpen(true)}
-              onReset={handleReset}
-            />
-          </div>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="border-t border-slate-900 py-6 text-center text-xs text-slate-500">
-        <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>Syllabus &amp; Exam Prep AI • Built with React 19 &amp; Gemini 3.8 Flash</span>
-          </div>
-
-          <div className="flex items-center gap-4 text-[11px]">
-            <span>Import .ics files directly into Google Calendar, Apple Calendar, or Outlook</span>
-          </div>
-        </div>
-      </footer>
-
-      {/* JSON Viewer Modal */}
-      <JsonViewerModal
-        isOpen={isJsonModalOpen}
-        onClose={() => setIsJsonModalOpen(false)}
-        data={syllabusData}
-      />
-
-      {/* Calendar Timeline Preview Modal */}
-      <CalendarPreviewModal
-        isOpen={isCalendarPreviewOpen}
-        onClose={() => setIsCalendarPreviewOpen(false)}
-        data={syllabusData}
-      />
+        <JsonViewerModal
+          isOpen={isJsonModalOpen}
+          onClose={() => setIsJsonModalOpen(false)}
+          data={syllabusData}
+        />
+        <CalendarPreviewModal
+          isOpen={isCalendarPreviewOpen}
+          onClose={() => setIsCalendarPreviewOpen(false)}
+          data={syllabusData}
+        />
       </div>
     </div>
   );
