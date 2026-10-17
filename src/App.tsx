@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, BrainCircuit, BookOpen, Calendar, CalendarDays, CheckCircle2, FileStack, LayoutDashboard, Settings, ShieldCheck, Sparkles, UploadCloud } from 'lucide-react';
+import { ArrowRight, BookOpen, Calendar, CalendarDays, CheckCircle2, FileStack, LayoutDashboard, Settings, ShieldCheck, Sparkles, UploadCloud } from 'lucide-react';
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
@@ -391,16 +391,10 @@ export default function App() {
                   <div className="wf-preview-event"><span className="wf-preview-event-bar" /><div><strong>Midterm exam</strong><small>Thu, Oct 15 · 10:00 AM</small></div><CheckCircle2 className="w-4 h-4" /></div>
                   <div className="wf-preview-event"><span className="wf-preview-event-bar green" /><div><strong>Project milestone</strong><small>Tue, Oct 20 · Due</small></div><CheckCircle2 className="w-4 h-4" /></div>
                 </div>
-                <div className="wf-preview-card wf-preview-card-float">
-                  <div className="wf-float-icon"><BrainCircuit className="w-4 h-4" /></div>
-                  <div><small>Extracted from your syllabus</small><strong>18 important dates</strong></div>
-                  <span className="wf-tag ok">Ready</span>
-                </div>
               </div>
               <div className="wf-landing-features">
                 {[
                   [FileStack, 'One clear source', 'Keep every syllabus and course document organized in one place.'],
-                  [BrainCircuit, 'Thoughtful extraction', 'Find deadlines, exams, meetings, and the details around them.'],
                   [Calendar, 'Ready when you are', 'Review every event, then export a clean calendar in one click.'],
                 ].map(([Icon, title, text]) => (
                   <div className="wf-landing-feature" key={title as string}>
@@ -568,7 +562,7 @@ export default function App() {
               <p className="wf-sub">Upcoming events from your imported document, in date order.</p>
               {syllabusData ? (
                 <div className="workflow-card" style={{ padding: 16 }}>
-                  <CalendarTimeline data={syllabusData} includePrep={includePrep} onChange={save} />
+                  <CalendarTimeline data={syllabusData} includePrep={includePrep} onChange={save} documents={documents} />
                 </div>
               ) : (
                 <EmptyState text="Nothing to preview yet. Upload a PDF to see its events." />
@@ -619,6 +613,7 @@ export default function App() {
           data={syllabusData}
           includePrep={includePrep}
           onChange={save}
+          documents={documents}
         />
       </div>
     </div>
