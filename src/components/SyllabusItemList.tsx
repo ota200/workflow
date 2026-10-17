@@ -213,6 +213,27 @@ export const SyllabusItemList: React.FC<SyllabusItemListProps> = ({
                     </span>
                   </div>
                 )}
+                {item.location && (
+                  <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-blue-400">
+                    <Bookmark className="w-3.5 h-3.5" />
+                    <span>
+                      Location: <strong className="text-white font-sans">{item.location}</strong>
+                    </span>
+                  </div>
+                )}
+                {item.confidence && (
+                  <span
+                    className={`px-2.5 py-1 rounded-xl border text-[10px] uppercase tracking-wide font-semibold ${
+                      item.confidence.toLowerCase() === 'high'
+                        ? 'text-emerald-300 border-emerald-800 bg-emerald-950/30'
+                        : item.confidence.toLowerCase() === 'low'
+                        ? 'text-amber-300 border-amber-800 bg-amber-950/30'
+                        : 'text-slate-300 border-slate-700 bg-slate-950'
+                    }`}
+                  >
+                    {item.confidence} confidence
+                  </span>
+                )}
               </div>
 
               {/* Prep Information Section */}
@@ -240,6 +261,13 @@ export const SyllabusItemList: React.FC<SyllabusItemListProps> = ({
                     <strong className="text-slate-100 font-medium">Strategy &amp; Guidance: </strong>
                     {prep.summary}
                   </div>
+
+                  {item.sourceQuote && (
+                    <div className="border-l-2 border-blue-500/70 bg-blue-950/20 rounded-r-xl px-3 py-2 text-[11px] text-slate-400">
+                      <span className="text-blue-300 font-semibold">Source evidence: </span>
+                      {item.sourceQuote}
+                    </div>
+                  )}
 
                   {/* Milestones checklist */}
                   {prep.milestones && prep.milestones.length > 0 && (

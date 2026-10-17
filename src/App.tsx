@@ -10,6 +10,9 @@ import {
   CheckCircle2,
   ExternalLink,
   BookOpen,
+  LayoutDashboard,
+  FileStack,
+  Settings,
 } from 'lucide-react';
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
@@ -18,11 +21,21 @@ import { SyllabusSummaryCard } from './components/SyllabusSummaryCard';
 import { SyllabusItemList } from './components/SyllabusItemList';
 import { JsonViewerModal } from './components/JsonViewerModal';
 import { CalendarPreviewModal } from './components/CalendarPreviewModal';
+import { CourseKeyInfoCard } from './components/CourseKeyInfoCard';
+import { ClassWorkspace } from './components/ClassWorkspace';
 
 export default function App() {
-  const [syllabusData, setSyllabusData] = useState<SyllabusAnalysisResult | null>(null);
+  const [syllabusData, setSyllabusData] = useState<SyllabusAnalysisResult | null>(() => {
+    try {
+      const saved = localStorage.getItem('workflow-course-workspace');
+      return saved ? JSON.parse(saved) as SyllabusAnalysisResult : null;
+    } catch {
+      return null;
+    }
+  });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sourcePdf, setSourcePdf] = useState<string | null>(null);
 
   // Modals
   const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
@@ -31,6 +44,7 @@ export default function App() {
   const handleAnalyzePdf = async (base64Data: string, filename: string) => {
     setIsAnalyzing(true);
     setError(null);
+    setSourcePdf(base64Data);
 
     try {
       const response = await fetch('/api/analyze-pdf', {
@@ -51,7 +65,18 @@ export default function App() {
       }
 
       if (result.data && Array.isArray(result.data.items)) {
-        setSyllabusData(result.data);
+        const analyzedData = {
+          ...result.data,
+          analyzedAt: new Date().toISOString(),
+          sourceDocument: filename,
+          items: result.data.items.map((item: SyllabusAnalysisResult['items'][number]) => ({
+            ...item,
+            reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
+            includeInExport: item.includeInExport !== false,
+          })),
+        };
+        setSyllabusData(analyzedData);
+        localStorage.setItem('workflow-course-workspace', JSON.stringify(analyzedData));
       } else {
         throw new Error('Invalid response structure received from Gemini API.');
       }
@@ -63,20 +88,117 @@ export default function App() {
     }
   };
 
+  const handleAnalyzeWebsite = async (url: string) => {
+    setIsAnalyzing(true);
+    setError(null);
+    setSourcePdf(null);
+
+    try {
+      const scrapeResponse = await fetch('/api/scrape-website', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const scraped = await scrapeResponse.json();
+      if (!scrapeResponse.ok) {
+        throw new Error(scraped.message || scraped.error || 'Unable to scrape website.');
+      }
+
+      const analyzeResponse = await fetch('/api/analyze-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentText: scraped.text,
+          filename: scraped.title || url,
+          sourceUrl: scraped.sourceUrl || url,
+        }),
+      });
+      const result = await analyzeResponse.json();
+      if (!analyzeResponse.ok) {
+        throw new Error(result.message || result.error || 'Failed to analyze website content.');
+      }
+
+      if (result.data && Array.isArray(result.data.items)) {
+        const analyzedData = {
+          ...result.data,
+          analyzedAt: new Date().toISOString(),
+          sourceDocument: scraped.title || url,
+          items: result.data.items.map((item: SyllabusAnalysisResult['items'][number]) => ({
+            ...item,
+            reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
+            includeInExport: item.includeInExport !== false,
+          })),
+        };
+        setSyllabusData(analyzedData);
+        localStorage.setItem('workflow-course-workspace', JSON.stringify(analyzedData));
+      } else {
+        throw new Error('Invalid response structure received from website analysis.');
+      }
+    } catch (err: any) {
+      console.error('Website analysis error:', err);
+      setError(err?.message || 'Error scraping or analyzing the website.');
+      throw err;
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleLoadSample = () => {
     setError(null);
-    setSyllabusData(sampleSyllabusData);
+    setSyllabusData({ ...sampleSyllabusData, analyzedAt: new Date().toISOString(), sourceDocument: 'sample-syllabus.pdf' });
   };
 
   const handleReset = () => {
     setSyllabusData(null);
     setError(null);
+    setSourcePdf(null);
+    localStorage.removeItem('workflow-course-workspace');
+  };
+
+  const handleWorkspaceChange = (nextData: SyllabusAnalysisResult) => {
+    setSyllabusData(nextData);
+    localStorage.setItem('workflow-course-workspace', JSON.stringify(nextData));
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
+    <div className="workflow-shell">
+      <aside className="workflow-sidebar" aria-label="Primary navigation">
+        <div className="workflow-logo">
+          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
+          Workflow
+        </div>
+        <button className="workflow-nav-item active" type="button">
+          <LayoutDashboard className="w-4 h-4" />
+          Dashboard
+        </button>
+        <button className="workflow-nav-item" type="button">
+          <FileStack className="w-4 h-4" />
+          My Documents
+        </button>
+        <button
+          className={`workflow-nav-item ${syllabusData ? 'active' : ''}`}
+          type="button"
+          onClick={() => syllabusData && setIsCalendarPreviewOpen(true)}
+        >
+          <Calendar className="w-4 h-4" />
+          Calendar Preview
+        </button>
+        <button className="workflow-nav-item" type="button">
+          <Settings className="w-4 h-4" />
+          Settings
+        </button>
+        <div className="workflow-profile">
+          <div className="workflow-avatar">AI</div>
+          <div>
+            <div className="text-sm font-medium">Personal</div>
+            <div className="text-xs text-slate-500">Calendar workspace</div>
+          </div>
+        </div>
+      </aside>
+
+      <div className="workflow-content">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur-md sticky top-0 z-40">
+      <header className="workflow-header border-b border-slate-800 bg-slate-900/70 backdrop-blur-md sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
@@ -130,7 +252,7 @@ export default function App() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
+      <main className="workflow-main flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 space-y-6">
         {!syllabusData ? (
           <div className="space-y-8 max-w-3xl mx-auto py-6">
             {/* Hero text */}
@@ -150,6 +272,7 @@ export default function App() {
             {/* Uploader Component */}
             <PdfUploader
               onAnalyzePdf={handleAnalyzePdf}
+              onAnalyzeWebsite={handleAnalyzeWebsite}
               onLoadSample={handleLoadSample}
               isAnalyzing={isAnalyzing}
               error={error}
@@ -190,17 +313,26 @@ export default function App() {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Top Summary Card */}
-            <SyllabusSummaryCard
-              data={syllabusData}
-              onViewJson={() => setIsJsonModalOpen(true)}
-              onReset={handleReset}
-            />
+            <div className="flex flex-wrap items-center gap-2" aria-label="Workflow progress">
+              {['Upload', 'Extract', 'Review', 'Export'].map((step, index) => (
+                <div
+                  key={step}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-800/70 bg-emerald-950/30 text-xs text-emerald-300"
+                >
+                  <span className="w-5 h-5 rounded-full bg-emerald-600 text-white grid place-items-center text-[10px] font-bold">
+                    {index < 2 ? '✓' : index + 1}
+                  </span>
+                  <span>{step}</span>
+                </div>
+              ))}
+            </div>
 
-            {/* Items List */}
-            <SyllabusItemList
-              items={syllabusData.items}
-              courseData={syllabusData}
+            <ClassWorkspace
+              data={syllabusData}
+              pdfData={sourcePdf || undefined}
+              onChange={handleWorkspaceChange}
+              onOpenJson={() => setIsJsonModalOpen(true)}
+              onReset={handleReset}
             />
           </div>
         )}
@@ -233,6 +365,7 @@ export default function App() {
         onClose={() => setIsCalendarPreviewOpen(false)}
         data={syllabusData}
       />
+      </div>
     </div>
   );
 }

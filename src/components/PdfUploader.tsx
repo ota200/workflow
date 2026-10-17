@@ -7,10 +7,12 @@ import {
   CheckCircle2,
   X,
   FileCheck,
+  Link,
 } from 'lucide-react';
 
 interface PdfUploaderProps {
   onAnalyzePdf: (base64Data: string, filename: string) => Promise<void>;
+  onAnalyzeWebsite: (url: string) => Promise<void>;
   onLoadSample: () => void;
   isAnalyzing: boolean;
   error: string | null;
@@ -18,6 +20,7 @@ interface PdfUploaderProps {
 
 export const PdfUploader: React.FC<PdfUploaderProps> = ({
   onAnalyzePdf,
+  onAnalyzeWebsite,
   onLoadSample,
   isAnalyzing,
   error,
@@ -25,6 +28,9 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileBase64, setFileBase64] = useState<string | null>(null);
+  const [sourceName, setSourceName] = useState<string | null>(null);
+  const [websiteUrl, setWebsiteUrl] = useState('');
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFile = (file: File) => {
@@ -34,6 +40,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
     }
 
     setSelectedFile(file);
+    setSourceName(file.name);
     const reader = new FileReader();
     reader.onload = (e) => {
       const result = e.target?.result as string;
@@ -68,14 +75,30 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
   };
 
   const handleStartAnalysis = async () => {
-    if (!fileBase64 || !selectedFile) return;
-    await onAnalyzePdf(fileBase64, selectedFile.name);
+    if (!fileBase64 || !sourceName) return;
+    await onAnalyzePdf(fileBase64, sourceName);
   };
 
   const handleClear = () => {
     setSelectedFile(null);
     setFileBase64(null);
+    setSourceName(null);
+    setWebsiteUrl('');
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleFetchWebsite = async () => {
+    if (!websiteUrl.trim()) return;
+
+    setIsFetchingUrl(true);
+    try {
+      await onAnalyzeWebsite(websiteUrl.trim());
+      setSourceName(websiteUrl.trim());
+    } catch (fetchError: any) {
+      alert(fetchError?.message || 'Unable to scrape the website.');
+    } finally {
+      setIsFetchingUrl(false);
+    }
   };
 
   return (
@@ -86,11 +109,11 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
         onDrop={handleDrop}
-        onClick={() => !selectedFile && fileInputRef.current?.click()}
+        onClick={() => !selectedFile && !sourceName && fileInputRef.current?.click()}
         className={`relative border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer ${
           dragActive
             ? 'border-blue-500 bg-blue-950/20'
-            : selectedFile
+            :             selectedFile || sourceName
             ? 'border-emerald-500/60 bg-emerald-950/10'
             : 'border-slate-700/80 hover:border-slate-600 bg-slate-950/60 hover:bg-slate-950/80'
         }`}
@@ -103,7 +126,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
           className="hidden"
         />
 
-        {selectedFile ? (
+        {selectedFile || sourceName ? (
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3.5 text-left">
               <div className="w-12 h-12 rounded-2xl bg-emerald-950/80 border border-emerald-800/80 flex items-center justify-center text-emerald-400 shrink-0">
@@ -111,10 +134,13 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
               </div>
               <div>
                 <p className="text-sm font-semibold text-white truncate max-w-sm">
-                  {selectedFile.name}
+                  {sourceName}
                 </p>
                 <p className="text-xs text-slate-400 font-mono mt-0.5">
-                  {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Gemini Analysis
+                  {selectedFile
+                    ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB`
+                    : 'Fetched from website'}{' '}
+                  • Ready for Gemini Analysis
                 </p>
               </div>
             </div>
@@ -155,6 +181,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
                 )}
               </button>
             </div>
+
           </div>
         ) : (
           <div className="space-y-3">
@@ -173,6 +200,44 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
         )}
       </div>
 
+      <div className="flex items-center gap-3 text-[11px] text-slate-500">
+        <span className="h-px flex-1 bg-slate-800" />
+        <span>OR USE A WEBSITE</span>
+        <span className="h-px flex-1 bg-slate-800" />
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Link className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+          <input
+            type="url"
+            value={websiteUrl}
+            onChange={(e) => setWebsiteUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                void handleFetchWebsite();
+              }
+            }}
+            placeholder="Paste a syllabus PDF or webpage URL"
+            disabled={isFetchingUrl || isAnalyzing || Boolean(selectedFile || sourceName)}
+            className="w-full bg-slate-950 border border-slate-700/80 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleFetchWebsite()}
+          disabled={!websiteUrl.trim() || isFetchingUrl || isAnalyzing || Boolean(selectedFile || sourceName)}
+          className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+        >
+          <Link className="w-3.5 h-3.5" />
+          {isFetchingUrl ? 'Scraping website...' : 'Scrape Website'}
+        </button>
+      </div>
+
+      <p className="text-[11px] text-slate-500">
+        Works with a direct PDF link or a webpage containing a downloadable syllabus PDF.
+      </p>
+
       {/* Error Message */}
       {error && (
         <div className="p-4 bg-red-950/40 border border-red-800/80 rounded-2xl text-red-300 text-xs flex items-start gap-3">
@@ -188,7 +253,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 text-xs">
         <span className="text-slate-400 flex items-center gap-1.5">
           <Sparkles className="w-3.5 h-3.5 text-blue-400" />
-          Powered by Gemini 3.8 Flash • Extracts assignments, exams, weights, prep info &amp; milestones
+          Powered by Gemini 3.8 Flash • Scrapes course pages and extracts events, weights, prep info &amp; milestones
         </span>
 
         <button

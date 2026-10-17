@@ -5,6 +5,17 @@ export const sampleSyllabusData: SyllabusAnalysisResult = {
   courseCode: 'CS 189',
   instructor: 'Prof. Jonathan Shewchuk & Dr. Stella Yu',
   semester: 'Fall 2026',
+  keyInfo: {
+    overview:
+      'An intensive introduction to supervised and unsupervised machine learning, statistical modeling, and neural network methods.',
+    meetingSchedule: 'Tuesdays and Thursdays, 10:00 AM–11:30 AM',
+    location: 'Soda Hall 306',
+    gradingPolicy: 'Assignments 30%, midterm 22%, final project 25%, quizzes 5%, final exam 18%.',
+    requiredMaterials: ['Python 3 with NumPy and scikit-learn', 'Course lecture notes and problem sets'],
+    policies: ['Late submissions follow the course syllabus policy.', 'Collaboration must be acknowledged in submissions.'],
+    officeHours: 'Wednesday, 2:00 PM–4:00 PM by appointment',
+    importantNotes: ['The final project includes a reproducible notebook and technical paper.'],
+  },
   items: [
     {
       id: 'hw-1',
