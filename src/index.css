@@ -77,7 +77,16 @@ button:disabled { cursor: not-allowed; }
   width: 100%;
   padding: 32px clamp(16px, 4vw, 48px) 64px;
 }
-.workflow-mobilebar { display: none; }
+.workflow-mobilebar {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 17px;
+  font-weight: 700;
+}
 .workflow-shell.landing-mode { display: block; }
 .landing-mode .workflow-sidebar { display: none; }
 .landing-mode .workflow-main { max-width: none; min-height: 100vh; padding: 0; }
@@ -103,8 +112,13 @@ button:disabled { cursor: not-allowed; }
 .workflow-logo {
   display: flex; align-items: center; gap: 9px;
   padding: 2px 10px 18px;
+  width: 100%;
+  border: 0;
+  background: transparent;
   color: var(--workflow-brand);
+  text-align: left;
 }
+.workflow-logo:hover { color: var(--workflow-accent); }
 .workflow-logo-mark {
   width: 28px; height: 28px; display: block; flex: none;
   color: var(--workflow-brand);
