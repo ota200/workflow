@@ -281,6 +281,14 @@ export default function App() {
     localStorage.removeItem(ACTIVE_DOCUMENT_KEY);
   };
 
+  const goHome = () => {
+    setView('dashboard');
+    setShowLanding(true);
+    setShowDocumentUploader(false);
+    setIsExportStep(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const openDocument = (document: SyllabusAnalysisResult) => {
     setSyllabusData(document);
     setIsExportStep(false);
@@ -324,12 +332,12 @@ export default function App() {
   );
 
   return (
-    <div className={`workflow-shell ${view === 'dashboard' && !syllabusData && showLanding ? 'landing-mode' : ''}`}>
+    <div className={`workflow-shell ${view === 'dashboard' && showLanding ? 'landing-mode' : ''}`}>
       <aside className="workflow-sidebar" aria-label="Primary navigation">
-        <div className="workflow-logo">
+        <button type="button" className="workflow-logo" onClick={goHome} aria-label="Go to Workflow home">
           <WorkflowLogoMark />
           <span className="workflow-wordmark">Workflow</span>
-        </div>
+        </button>
         {NAV.map(([key, label, Icon]) => (
           <button
             key={key}
@@ -345,13 +353,13 @@ export default function App() {
       </aside>
 
       <div className="workflow-content">
-        <div className="workflow-mobilebar">
+        <button type="button" className="workflow-mobilebar" onClick={goHome} aria-label="Go to Workflow home">
           <WorkflowLogoMark />
           <span className="workflow-wordmark">Workflow</span>
-        </div>
+        </button>
 
         <main className="workflow-main">
-          {view === 'dashboard' && !syllabusData && showLanding && (
+          {view === 'dashboard' && showLanding && (
             <section className="wf-landing" aria-labelledby="landing-title">
               <div className="wf-landing-glow wf-landing-glow-one" />
               <div className="wf-landing-glow wf-landing-glow-two" />
@@ -424,7 +432,7 @@ export default function App() {
             </>
           )}
 
-          {view === 'dashboard' && syllabusData && (
+          {view === 'dashboard' && syllabusData && !showLanding && (
             <>
               <Stepper current={isExportStep ? 3 : 2} />
               {isExportStep ? (

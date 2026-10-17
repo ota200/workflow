@@ -20,6 +20,10 @@ const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.8-f
 const GEMINI_MAX_OUTPUT_TOKENS = parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS || '8192', 10);
 const isGemmaModel = /^gemma-/i.test(GEMINI_MODEL);
 const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+const corsOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const hasGeminiApiKey =
   Boolean(geminiApiKey) &&
   !['your-gemini-api-key', 'MY_GEMINI_API_KEY', 'YOUR_GEMINI_API_KEY'].includes(
@@ -29,6 +33,17 @@ const hasGeminiApiKey =
 // Increase body parser limit to support PDF uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use((req, res, next) => {
+  const requestOrigin = req.headers.origin;
+  if (requestOrigin && (corsOrigins.includes('*') || corsOrigins.includes(requestOrigin))) {
+    res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+});
 
 // Initialize server-side Google GenAI client
 const ai = hasGeminiApiKey
