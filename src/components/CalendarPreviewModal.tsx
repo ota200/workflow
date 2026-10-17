@@ -3,10 +3,15 @@ import { Download, X } from 'lucide-react';
 import { SyllabusAnalysisResult } from '../types/syllabus';
 import { downloadFile, generateIcsCalendar } from '../utils/calendarExport';
 import { colorOf } from '../utils/eventCategory.ts';
+import { parseScheduleDate } from '../utils/date';
+import { milestoneDate } from '../utils/studySchedule';
 
 type TimelineKind = 'due' | 'prep' | 'milestone';
 
 interface TimelineEvent {
+  id: string;
+  itemId: string;
+  milestoneId?: string;
   date: string;
   title: string;
   kind: TimelineKind;
@@ -21,7 +26,7 @@ const KIND_LABEL: Record<TimelineKind, string> = {
 };
 
 export function exportableData(data: SyllabusAnalysisResult): SyllabusAnalysisResult {
-  return { ...data, items: data.items.filter((item) => item.includeInExport !== false) };
+  return { ...data, items: data.items.filter((item) => item.includeInExport !== false && parseScheduleDate(item.dueDate)) };
 }
 
 export function buildTimeline(data: SyllabusAnalysisResult, includePrep: boolean): TimelineEvent[] {
@@ -29,7 +34,7 @@ export function buildTimeline(data: SyllabusAnalysisResult, includePrep: boolean
 
   exportableData(data).items.forEach((item) => {
     if (item.dueDate) {
-      events.push({ date: item.dueDate, title: item.title, kind: 'due', type: item.type, details: item.description });
+      events.push({ id: `${item.id}-due`, itemId: item.id, date: item.dueDate, title: item.title, kind: 'due', type: item.type, details: item.description });
     }
     if (!includePrep) return;
 
@@ -37,20 +42,25 @@ export function buildTimeline(data: SyllabusAnalysisResult, includePrep: boolean
       events.push({
         date: item.prepingInfo.prepDate,
         title: `Study for ${item.title}`,
+        id: `${item.id}-prep`,
+        itemId: item.id,
         kind: 'prep',
         type: item.type,
         details: [item.prepingInfo.duration && `Duration: ${item.prepingInfo.duration}`, item.prepingInfo.summary].filter(Boolean).join('. '),
       });
     }
 
-    const due = new Date(item.dueDate);
-    if (item.prepingInfo?.milestones && !isNaN(due.getTime())) {
+    const due = parseScheduleDate(item.dueDate);
+    if (item.prepingInfo?.milestones && due) {
       item.prepingInfo.milestones.forEach((m) => {
-        const d = new Date(due);
-        d.setDate(d.getDate() - (m.dayOffset ?? 2));
+        const date = milestoneDate(item, m);
+        if (!date) return;
         events.push({
-          date: d.toISOString().slice(0, 10),
+          date,
           title: m.title,
+          id: m.id,
+          itemId: item.id,
+          milestoneId: m.id,
           kind: 'milestone',
           type: item.type,
           details: `For ${item.title} · ${m.durationMinutes || 60} min`,
@@ -68,25 +78,68 @@ export function downloadIcs(data: SyllabusAnalysisResult, includePrep: boolean) 
   downloadFile(ics, name, 'text/calendar;charset=utf-8');
 }
 
-export const CalendarTimeline: React.FC<{ data: SyllabusAnalysisResult; includePrep: boolean }> = ({ data, includePrep }) => {
+export const CalendarTimeline: React.FC<{ data: SyllabusAnalysisResult; includePrep: boolean; onChange?: (data: SyllabusAnalysisResult) => void }> = ({ data, includePrep, onChange }) => {
   const events = buildTimeline(data, includePrep);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
   if (!events.length) return <div className="wf-empty">No events selected for export.</div>;
 
   return (
     <div>
-      {events.map((evt, i) => (
-        <div key={i} className="wf-row" style={{ alignItems: 'flex-start' }}>
+      {events.map((evt) => {
+        const item = data.items.find((entry) => entry.id === evt.itemId);
+        const editing = editingId === evt.id;
+        if (!item) return null;
+        return (
+        <div key={evt.id} className="wf-row" style={{ alignItems: 'flex-start' }}>
           <span className="wf-dot" style={{ background: colorOf(evt.type), marginTop: 7 }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 500 }}>{evt.title}</div>
-            {evt.details && <div className="wf-small wf-muted" style={{ marginTop: 2 }}>{evt.details}</div>}
+            {editing && onChange ? (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <input className="wf-input" aria-label="Calendar event title" defaultValue={evt.title} id={`calendar-title-${evt.id}`} />
+                <input className="wf-input" aria-label="Calendar event date" type="date" defaultValue={evt.date.slice(0, 10)} id={`calendar-date-${evt.id}`} />
+              </div>
+            ) : (
+              <>
+                <div style={{ fontWeight: 500 }}>{evt.title}</div>
+                {evt.details && <div className="wf-small wf-muted" style={{ marginTop: 2 }}>{evt.details}</div>}
+              </>
+            )}
           </div>
           <div style={{ textAlign: 'right', flex: 'none' }}>
-            <div className="wf-small">{evt.date.slice(0, 10)}</div>
+            {!editing && <div className="wf-small">{evt.date.slice(0, 10)}</div>}
             <span className={`wf-tag ${evt.kind === 'due' ? 'accent' : ''}`} style={{ marginTop: 2 }}>{KIND_LABEL[evt.kind]}</span>
+            {onChange && (
+              editing ? (
+                <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                  <button type="button" className="workflow-primary-button" onClick={() => {
+                    const title = (document.getElementById(`calendar-title-${evt.id}`) as HTMLInputElement)?.value.trim();
+                    const date = (document.getElementById(`calendar-date-${evt.id}`) as HTMLInputElement)?.value;
+                    if (!title || !date) return;
+                    const items = data.items.map((entry) => {
+                      if (entry.id !== item.id) return entry;
+                      if (evt.kind === 'due') return { ...entry, title, dueDate: entry.dueDate.includes('T') ? `${date}T${entry.dueDate.slice(11)}` : date };
+                      if (evt.kind === 'prep') return { ...entry, prepingInfo: { ...entry.prepingInfo, prepDate: date } };
+                      const dueDate = parseScheduleDate(entry.dueDate);
+                      const selectedDate = parseScheduleDate(date);
+                      const dayOffset = dueDate && selectedDate
+                        ? Math.max(1, Math.round((dueDate.getTime() - selectedDate.getTime()) / 86_400_000))
+                        : undefined;
+                      const milestone = entry.prepingInfo?.milestones?.map((candidate) => candidate.id === evt.milestoneId
+                        ? { ...candidate, title, ...(dayOffset === undefined ? {} : { dayOffset }) }
+                        : candidate);
+                      return { ...entry, prepingInfo: { ...entry.prepingInfo, milestones: milestone } };
+                    });
+                    onChange({ ...data, items });
+                    setEditingId(null);
+                  }}>Save</button>
+                  <button type="button" className="wf-ghost-button" onClick={() => setEditingId(null)}>Cancel</button>
+                </div>
+              ) : <button type="button" className="wf-ghost-button" onClick={() => setEditingId(evt.id)}>Edit</button>
+            )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
@@ -96,9 +149,10 @@ interface CalendarPreviewModalProps {
   onClose: () => void;
   data: SyllabusAnalysisResult | null;
   includePrep?: boolean;
+  onChange?: (data: SyllabusAnalysisResult) => void;
 }
 
-export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOpen, onClose, data, includePrep = true }) => {
+export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOpen, onClose, data, includePrep = true, onChange }) => {
   if (!isOpen || !data) return null;
 
   return (
@@ -119,7 +173,7 @@ export const CalendarPreviewModal: React.FC<CalendarPreviewModalProps> = ({ isOp
           </div>
         </div>
         <div className="wf-modal-body">
-          <CalendarTimeline data={data} includePrep={includePrep} />
+          <CalendarTimeline data={data} includePrep={includePrep} onChange={onChange} />
         </div>
       </div>
     </div>

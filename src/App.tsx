@@ -1,13 +1,19 @@
+<<<<<<< HEAD
+import React, { useEffect, useState } from 'react';
+import { ArrowRight, BrainCircuit, BookOpen, Calendar, CalendarDays, CheckCircle2, FileStack, LayoutDashboard, Settings, ShieldCheck, Sparkles, UploadCloud } from 'lucide-react';
+=======
 import React, { useState } from 'react';
 import { Calendar, FileStack, LayoutDashboard, Settings } from 'lucide-react';
+>>>>>>> origin/main
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
 import { JsonViewerModal } from './components/JsonViewerModal';
 import { CalendarPreviewModal, CalendarTimeline, downloadIcs } from './components/CalendarPreviewModal';
 import { ClassWorkspace } from './components/ClassWorkspace';
+import { RevisionDashboard } from './components/RevisionDashboard';
 
-type View = 'dashboard' | 'documents' | 'calendar' | 'settings';
+type View = 'dashboard' | 'documents' | 'calendar' | 'revision' | 'settings';
 type Item = SyllabusAnalysisResult['items'][number];
 
 const STORAGE_KEY = 'workflow-course-workspace';
@@ -18,6 +24,7 @@ const SETTINGS_KEY = 'workflow-settings';
 const withReviewDefaults = (items: Item[]) =>
   items.map((item) => ({
     ...item,
+    prepingInfo: item.prepingInfo || { id: `prep-${item.id}`, duration: '', summary: '', milestones: [] },
     reviewStatus: item.reviewStatus || (item.confidence === 'low' ? 'needs-review' : 'reviewed'),
     includeInExport: item.includeInExport !== false,
   }));
@@ -26,10 +33,20 @@ const NAV: Array<[View, string, React.ComponentType<{ className?: string }>]> = 
   ['dashboard', 'Dashboard', LayoutDashboard],
   ['documents', 'My Documents', FileStack],
   ['calendar', 'Calendar Preview', Calendar],
+  ['revision', 'Revision', BookOpen],
   ['settings', 'Settings', Settings],
 ];
 
 const STEPS = ['Upload', 'Extract', 'Review', 'Export'];
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const isView = (value: string): value is View => ['dashboard', 'documents', 'calendar', 'revision', 'settings'].includes(value);
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (!API_BASE_URL && window.location.hostname.endsWith('github.io')) {
+    throw new Error('Document analysis needs a configured API service. Set VITE_API_BASE_URL to your deployed server and rebuild.');
+  }
+  return fetch(`${API_BASE_URL}${path}`, init);
+}
 
 function WorkflowLogoMark() {
   return (
@@ -76,7 +93,10 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sourcePdf, setSourcePdf] = useState<string | null>(null);
-  const [view, setView] = useState<View>('dashboard');
+  const [view, setView] = useState<View>(() => {
+    const hash = window.location.hash.slice(1);
+    return isView(hash) ? hash : 'dashboard';
+  });
   const [includePrep, setIncludePrep] = useState<boolean>(() => {
     try {
       return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}').includePrep !== false;
@@ -89,10 +109,22 @@ export default function App() {
   const [isCalendarPreviewOpen, setIsCalendarPreviewOpen] = useState(false);
   const [showDocumentUploader, setShowDocumentUploader] = useState(false);
   const [isExportStep, setIsExportStep] = useState(false);
+  const [showLanding, setShowLanding] = useState(() => !syllabusData);
+
+  useEffect(() => {
+    const syncViewFromHash = () => {
+      const hash = window.location.hash.slice(1);
+      if (isView(hash) && hash !== view) setView(hash);
+    };
+    window.addEventListener('hashchange', syncViewFromHash);
+    if (window.location.hash !== `#${view}`) window.history.replaceState(null, '', `#${view}`);
+    return () => window.removeEventListener('hashchange', syncViewFromHash);
+  }, [view]);
 
   const save = (data: SyllabusAnalysisResult) => {
     const savedData = { ...data, id: data.id || `${Date.now()}-${data.sourceDocument || 'document'}` };
     setSyllabusData(savedData);
+    setShowLanding(false);
     setIsExportStep(false);
     if (savedData.id) localStorage.setItem(ACTIVE_DOCUMENT_KEY, savedData.id);
     setDocuments((current) => {
@@ -109,7 +141,7 @@ export default function App() {
     setSourcePdf(base64Data);
 
     try {
-      const response = await fetch('/api/analyze-pdf', {
+      const response = await apiFetch('/api/analyze-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pdfBase64: base64Data, filename }),
@@ -143,7 +175,7 @@ export default function App() {
     setSourcePdf(null);
 
     try {
-      const scrapeResponse = await fetch('/api/scrape-website', {
+      const scrapeResponse = await apiFetch('/api/scrape-website', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
@@ -153,7 +185,7 @@ export default function App() {
         throw new Error(scraped.message || scraped.error || 'Unable to scrape website.');
       }
 
-      const analyzeResponse = await fetch('/api/analyze-pdf', {
+      const analyzeResponse = await apiFetch('/api/analyze-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -186,6 +218,23 @@ export default function App() {
     }
   };
 
+  const handleGeneratePrep = async (item: Item) => {
+    const response = await apiFetch('/api/generate-prep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        documentKey: syllabusData?.id || syllabusData?.sourceDocument || 'active-document',
+        event: item,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.data) throw new Error(result.message || result.error || 'Unable to generate a study plan.');
+    save({
+      ...syllabusData!,
+      items: syllabusData!.items.map((entry) => entry.id === item.id ? { ...entry, prepingInfo: result.data } : entry),
+    });
+  };
+
   const handleLoadSample = () => {
     setError(null);
     save({
@@ -198,6 +247,7 @@ export default function App() {
   };
 
   const handleReset = () => {
+    if (!window.confirm('Remove this course and its saved events? This cannot be undone.')) return;
     const currentId = syllabusData?.id;
     const remaining = currentId ? documents.filter((document) => document.id !== currentId) : documents;
     setDocuments(remaining);
@@ -209,13 +259,31 @@ export default function App() {
     localStorage.removeItem(ACTIVE_DOCUMENT_KEY);
     localStorage.setItem(DOCUMENTS_KEY, JSON.stringify(remaining));
     setIsExportStep(false);
-    if (remaining[0]) {
-      const next = remaining[0];
-      setSyllabusData(next);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      localStorage.setItem(ACTIVE_DOCUMENT_KEY, next.id || '');
-      setView('dashboard');
-    }
+    setShowDocumentUploader(false);
+  };
+
+  const handleStartNewDocument = () => {
+    setSyllabusData(null);
+    setError(null);
+    setSourcePdf(null);
+    setIsExportStep(false);
+    setShowDocumentUploader(false);
+    setShowLanding(false);
+    setView('dashboard');
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_DOCUMENT_KEY);
+  };
+
+  const handleOpenNewDocumentUploader = () => {
+    setSyllabusData(null);
+    setError(null);
+    setSourcePdf(null);
+    setIsExportStep(false);
+    setShowLanding(false);
+    setShowDocumentUploader(true);
+    setView('documents');
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_DOCUMENT_KEY);
   };
 
   const openDocument = (document: SyllabusAnalysisResult) => {
@@ -227,6 +295,19 @@ export default function App() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(document));
     }
     setView('dashboard');
+  };
+
+  const updateDocument = (documentId: string, data: SyllabusAnalysisResult) => {
+    const savedData = { ...data, id: data.id || documentId };
+    setDocuments((current) => {
+      const next = current.map((entry) => entry.id === documentId || entry.sourceDocument === documentId ? savedData : entry);
+      localStorage.setItem(DOCUMENTS_KEY, JSON.stringify(next));
+      return next;
+    });
+    if (syllabusData?.id === documentId || syllabusData?.sourceDocument === documentId) {
+      setSyllabusData(savedData);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedData));
+    }
   };
 
   const toggleIncludePrep = (value: boolean) => {
@@ -241,14 +322,14 @@ export default function App() {
   const EmptyState = ({ text }: { text: string }) => (
     <div className="workflow-card wf-empty">
       <p style={{ margin: '0 0 14px' }}>{text}</p>
-      <button type="button" className="workflow-primary-button" onClick={() => setView('dashboard')}>
+      <button type="button" className="workflow-primary-button" onClick={() => { setShowLanding(false); setView('dashboard'); }}>
         Upload a PDF
       </button>
     </div>
   );
 
   return (
-    <div className="workflow-shell">
+    <div className={`workflow-shell ${view === 'dashboard' && !syllabusData && showLanding ? 'landing-mode' : ''}`}>
       <aside className="workflow-sidebar" aria-label="Primary navigation">
         <div className="workflow-logo">
           <WorkflowLogoMark />
@@ -275,7 +356,68 @@ export default function App() {
         </div>
 
         <main className="workflow-main">
-          {view === 'dashboard' && !syllabusData && (
+          {view === 'dashboard' && !syllabusData && showLanding && (
+            <section className="wf-landing" aria-labelledby="landing-title">
+              <div className="wf-landing-glow wf-landing-glow-one" />
+              <div className="wf-landing-glow wf-landing-glow-two" />
+              <div className="wf-landing-copy">
+                <div className="wf-landing-eyebrow"><Sparkles className="w-4 h-4" /> Your academic command center</div>
+                <h1 id="landing-title">Turn a syllabus into a plan you can actually follow.</h1>
+                <p>
+                  Workflow reads the dates hiding in your course documents, turns them into a clear schedule,
+                  and gives you a calendar you can take anywhere.
+                </p>
+                <div className="wf-landing-actions">
+                  <button type="button" className="workflow-primary-button btn-lg" onClick={() => setShowLanding(false)}>
+                    Bring in a document <ArrowRight className="w-4 h-4" />
+                  </button>
+                  <button type="button" className="workflow-secondary-button btn-lg" onClick={handleLoadSample}>
+                    Explore a sample
+                  </button>
+                </div>
+                <div className="wf-landing-trust">
+                  <span><ShieldCheck className="w-4 h-4" /> Review before export</span>
+                  <span><UploadCloud className="w-4 h-4" /> PDF or web link</span>
+                  <span><CalendarDays className="w-4 h-4" /> Works with any calendar</span>
+                </div>
+              </div>
+              <div className="wf-landing-preview" aria-label="Preview of an organized course schedule">
+                <div className="wf-preview-orbit orbit-one" />
+                <div className="wf-preview-orbit orbit-two" />
+                <div className="wf-preview-card wf-preview-card-main">
+                  <div className="wf-preview-topline"><span className="wf-preview-dot" /> Fall semester plan <span className="wf-tag accent">Live</span></div>
+                  <div className="wf-preview-date">October <strong>2026</strong></div>
+                  <div className="wf-preview-calendar">
+                    {['M', 'T', 'W', 'T', 'F'].map((day) => <span key={day}>{day}</span>)}
+                    {['12', '13', '14', '15', '16', '19', '20', '21', '22', '23'].map((day, index) => (
+                      <b key={day} className={index === 3 ? 'selected' : index === 6 ? 'accented' : ''}>{day}</b>
+                    ))}
+                  </div>
+                  <div className="wf-preview-event"><span className="wf-preview-event-bar" /><div><strong>Midterm exam</strong><small>Thu, Oct 15 · 10:00 AM</small></div><CheckCircle2 className="w-4 h-4" /></div>
+                  <div className="wf-preview-event"><span className="wf-preview-event-bar green" /><div><strong>Project milestone</strong><small>Tue, Oct 20 · Due</small></div><CheckCircle2 className="w-4 h-4" /></div>
+                </div>
+                <div className="wf-preview-card wf-preview-card-float">
+                  <div className="wf-float-icon"><BrainCircuit className="w-4 h-4" /></div>
+                  <div><small>Extracted from your syllabus</small><strong>18 important dates</strong></div>
+                  <span className="wf-tag ok">Ready</span>
+                </div>
+              </div>
+              <div className="wf-landing-features">
+                {[
+                  [FileStack, 'One clear source', 'Keep every syllabus and course document organized in one place.'],
+                  [BrainCircuit, 'Thoughtful extraction', 'Find deadlines, exams, meetings, and the details around them.'],
+                  [Calendar, 'Ready when you are', 'Review every event, then export a clean calendar in one click.'],
+                ].map(([Icon, title, text]) => (
+                  <div className="wf-landing-feature" key={title as string}>
+                    <span className="wf-landing-feature-icon"><Icon className="w-4 h-4" /></span>
+                    <div><strong>{title as string}</strong><p>{text as string}</p></div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {view === 'dashboard' && !syllabusData && !showLanding && (
             <>
               <h1 className="wf-h1">Turn documents into your schedule.</h1>
               <p className="wf-sub">
@@ -319,8 +461,11 @@ export default function App() {
                     <button type="button" className="workflow-secondary-button" onClick={() => setIsExportStep(false)}>
                       Back to review
                     </button>
-                    <button type="button" className="workflow-secondary-button" onClick={() => setShowDocumentUploader(true)}>
-                      Upload another document
+                    <button type="button" className="workflow-secondary-button" onClick={handleOpenNewDocumentUploader}>
+                      Upload new document
+                    </button>
+                    <button type="button" className="workflow-primary-button" onClick={handleOpenNewDocumentUploader}>
+                      Finish
                     </button>
                     <button type="button" className="wf-ghost-button danger" onClick={handleReset}>
                       Cancel this document
@@ -354,9 +499,10 @@ export default function App() {
                 onChange={save}
                 onOpenJson={() => setIsJsonModalOpen(true)}
                 onOpenCalendar={() => setIsCalendarPreviewOpen(true)}
-                onAddDocument={() => setShowDocumentUploader(true)}
+                onAddDocument={handleStartNewDocument}
                 onFinish={() => setIsExportStep(true)}
                 onReset={handleReset}
+                onGeneratePrep={handleGeneratePrep}
               />}
             </>
           )}
@@ -368,8 +514,14 @@ export default function App() {
                   <h1 className="wf-h1">My documents</h1>
                   <p className="wf-sub" style={{ marginBottom: 0 }}>Every PDF or website syllabus you’ve converted, with its status.</p>
                 </div>
-                <button type="button" className="workflow-primary-button" onClick={() => setShowDocumentUploader((current) => !current)}>
-                  {showDocumentUploader ? 'Close uploader' : 'Upload document'}
+                <button type="button" className="workflow-primary-button" onClick={() => {
+                  if (showDocumentUploader) {
+                    setShowDocumentUploader(false);
+                  } else {
+                    handleOpenNewDocumentUploader();
+                  }
+                }}>
+                  {showDocumentUploader ? 'Close uploader' : 'Add new document'}
                 </button>
               </div>
               {showDocumentUploader && (
@@ -421,12 +573,20 @@ export default function App() {
               <p className="wf-sub">Upcoming events from your imported document, in date order.</p>
               {syllabusData ? (
                 <div className="workflow-card" style={{ padding: 16 }}>
-                  <CalendarTimeline data={syllabusData} includePrep={includePrep} />
+                  <CalendarTimeline data={syllabusData} includePrep={includePrep} onChange={save} />
                 </div>
               ) : (
                 <EmptyState text="Nothing to preview yet. Upload a PDF to see its events." />
               )}
             </>
+          )}
+
+          {view === 'revision' && (
+            <RevisionDashboard
+              documents={documents}
+              onChange={updateDocument}
+              onOpenDocument={(document) => openDocument(document)}
+            />
           )}
 
           {view === 'settings' && (
@@ -462,6 +622,8 @@ export default function App() {
           isOpen={isCalendarPreviewOpen}
           onClose={() => setIsCalendarPreviewOpen(false)}
           data={syllabusData}
+          includePrep={includePrep}
+          onChange={save}
         />
       </div>
     </div>
