@@ -1,5 +1,10 @@
+<<<<<<< HEAD
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, BrainCircuit, BookOpen, Calendar, CalendarDays, CheckCircle2, FileStack, LayoutDashboard, Settings, ShieldCheck, Sparkles, UploadCloud } from 'lucide-react';
+=======
+import React, { useState } from 'react';
+import { Calendar, FileStack, LayoutDashboard, Settings } from 'lucide-react';
+>>>>>>> origin/main
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
@@ -41,6 +46,16 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
     throw new Error('Document analysis needs a configured API service. Set VITE_API_BASE_URL to your deployed server and rebuild.');
   }
   return fetch(`${API_BASE_URL}${path}`, init);
+}
+
+function WorkflowLogoMark() {
+  return (
+    <svg className="workflow-logo-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="23" height="20" rx="5" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M9 3v5M19 3v5M6.5 11h15" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="m7.2 21 1.8-6h3L10.2 21h-3Zm4.9 0 1.2-4h3L15.1 21h-3Zm4.9 0 2.4-8h3L20 21h-3Z" fill="currentColor" />
+    </svg>
+  );
 }
 
 function Stepper({ current }: { current: number }) {
@@ -317,8 +332,8 @@ export default function App() {
     <div className={`workflow-shell ${view === 'dashboard' && !syllabusData && showLanding ? 'landing-mode' : ''}`}>
       <aside className="workflow-sidebar" aria-label="Primary navigation">
         <div className="workflow-logo">
-          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
-          Workflow
+          <WorkflowLogoMark />
+          <span className="workflow-wordmark">Workflow</span>
         </div>
         {NAV.map(([key, label, Icon]) => (
           <button
@@ -336,8 +351,8 @@ export default function App() {
 
       <div className="workflow-content">
         <div className="workflow-mobilebar">
-          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
-          Workflow
+          <WorkflowLogoMark />
+          <span className="workflow-wordmark">Workflow</span>
         </div>
 
         <main className="workflow-main">
