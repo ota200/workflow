@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, BrainCircuit, BookOpen, Calendar, CalendarDays, CheckCircle2, FileStack, LayoutDashboard, Settings, ShieldCheck, Sparkles, UploadCloud } from 'lucide-react';
-=======
-import React, { useState } from 'react';
-import { Calendar, FileStack, LayoutDashboard, Settings } from 'lucide-react';
->>>>>>> origin/main
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
