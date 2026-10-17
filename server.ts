@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dns from 'dns/promises';
 import net from 'net';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { extractText, getDocumentProxy } from 'unpdf';
@@ -14,7 +15,9 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemma-4-31b-it';
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.8-flash';
+const GEMINI_MAX_OUTPUT_TOKENS = parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS || '8192', 10);
 const isGemmaModel = /^gemma-/i.test(GEMINI_MODEL);
 const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
 const hasGeminiApiKey =
@@ -42,7 +45,14 @@ const ai = hasGeminiApiKey
 const MAX_REMOTE_PDF_BYTES = 25 * 1024 * 1024;
 const MAX_REMOTE_PAGE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
-const MAX_MODEL_TEXT_CHARS = 350_000;
+const MAX_MODEL_TEXT_CHARS = parseInt(process.env.MAX_MODEL_TEXT_CHARS || '240000', 10);
+const MODEL_RETRY_DELAYS_MS = [750];
+const analysisCache = new Map<string, Record<string, unknown>>();
+const prepCache = new Map<string, Record<string, unknown>>();
+
+function documentCacheKey(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
 
 async function extractPdfText(pdfBytes: Buffer): Promise<string> {
   const pdf = await getDocumentProxy(new Uint8Array(pdfBytes));
@@ -195,6 +205,49 @@ function normalizeAnalysisResult(value: unknown): Record<string, unknown> {
 
   if (object.data && typeof object.data === 'object') return normalizeAnalysisResult(object.data);
   throw new Error('The model response did not contain an items array.');
+}
+
+function isTemporaryModelError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:429|500|502|503|504)\b|(?:UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand)/i.test(message);
+}
+
+async function withModelRetry<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const delay = MODEL_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isTemporaryModelError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+type GenerateContentRequest = Parameters<NonNullable<typeof ai>['models']['generateContent']>[0];
+
+async function generateAnalysis(
+  contents: GenerateContentRequest['contents'],
+  config: GenerateContentRequest['config'],
+) {
+  try {
+    return await withModelRetry(() => ai!.models.generateContent({
+      model: GEMINI_MODEL,
+      contents,
+      config,
+    }));
+  } catch (error) {
+    if (!isTemporaryModelError(error) || GEMINI_FALLBACK_MODEL === GEMINI_MODEL) throw error;
+    console.warn(`Model "${GEMINI_MODEL}" is temporarily unavailable; using "${GEMINI_FALLBACK_MODEL}" for this request.`);
+    return withModelRetry(() => ai!.models.generateContent({
+      model: GEMINI_FALLBACK_MODEL,
+      contents,
+      config: {
+        ...config,
+        responseMimeType: 'application/json',
+      },
+    }));
+  }
 }
 
   function decodeHtmlEntities(value: string): string {
@@ -374,10 +427,14 @@ app.post('/api/analyze-pdf', async (req: Request, res: Response) => {
     const cleanBase64 = pdfBase64
       ? pdfBase64.replace(/^data:application\/pdf;base64,/, '').replace(/\s/g, '')
       : '';
+    const cacheKey = documentCacheKey(cleanBase64 || documentText?.trim() || '');
+    const cached = analysisCache.get(cacheKey);
+    if (cached) return res.json({ success: true, data: cached, cached: true });
 
     const promptText = `You are an academic document extraction specialist.
 Analyze the attached PDF syllabus, course document, calendar, schedule, or exam guide (${filename || 'document.pdf'}).
 Extract every dated academic event, including assignments, homework, exams, midterms, finals, quizzes, projects, labs, presentations, papers, lectures, meetings, breaks, and other important class events.
+Focus this pass only on finding and accurately structuring events. Do not generate study plans, preparation summaries, or milestones yet.
 Also extract a concise, student-friendly key information section for the course.
 Use only facts supported by the document. Never invent dates, times, locations, grading weights, policies, instructors, or materials.
 If a date or time is ambiguous, preserve the uncertainty in sourceQuote and set confidence to "low". If a time is missing, leave it absent rather than guessing.
@@ -393,13 +450,6 @@ For each item, extract:
 8. sourceQuote: Short verbatim evidence from the document supporting the event
 9. sourcePage: The 1-based PDF page containing the evidence when available; omit for website text or when unknown
 10. confidence: "high", "medium", or "low" based on how clearly the document states the event
-11. prepingInfo:
-   - id: Unique identifier for preparation (e.g., "prep-item-1")
-   - duration: Recommended prep duration (e.g., "12 hours across 4 days", "6 hours", "3 days")
-   - summary: Specific, actionable study advice and preparation checklist (chapters, practice problems, draft reviews, software setup)
-   - prepDate: Recommended preparation start date in YYYY-MM-DD format (scheduled ahead of the due date, e.g., 5 to 10 days before exams/projects, 2 to 4 days for homework)
-   - milestones: 2 to 4 actionable study blocks/milestones leading up to the due date with dayOffset (days prior to dueDate), title, and durationMinutes.
-
 Also detect the courseName, courseCode, instructor, and semester from the syllabus header.
 For keyInfo, extract overview, meetingSchedule, location, gradingPolicy, readings, requiredMaterials, policies, officeHours, and importantNotes.
 Return valid JSON only. Ensure every date is valid ISO format and never append explanatory text to a date.`;
@@ -434,10 +484,8 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
           { text: promptText },
         ];
 
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents,
-      config: {
+    const response = await generateAnalysis(contents, {
+        maxOutputTokens: Math.min(GEMINI_MAX_OUTPUT_TOKENS, 4096),
         responseMimeType: isGemmaModel ? undefined : 'application/json',
         responseSchema: isGemmaModel ? undefined : {
           type: Type.OBJECT,
@@ -503,14 +551,13 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
                     required: ['id', 'duration', 'summary'],
                   },
                 },
-                required: ['id', 'title', 'type', 'dueDate', 'weight', 'prepingInfo'],
+                required: ['id', 'title', 'type', 'dueDate', 'weight'],
               },
             },
           },
           required: ['items'],
         },
-      },
-    });
+      });
 
     const outputText = response.text;
     if (!outputText) {
@@ -518,6 +565,7 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
     }
 
     const parsedData = normalizeAnalysisResult(parseModelJson(outputText));
+    analysisCache.set(cacheKey, parsedData);
     return res.json({
       success: true,
       data: parsedData,
@@ -528,10 +576,68 @@ Return valid JSON only. Ensure every date is valid ISO format and never append e
     const providerMessage = error?.message || 'Failed to analyze the supplied document.';
     return res.status(500).json({
       error: 'Analysis Failed',
-      message: isGemmaModel
-        ? `Gemma model "${GEMINI_MODEL}" failed to process this request. Verify that this exact model is available for your API key and supports PDF/web content. Provider response: ${providerMessage}`
-        : providerMessage,
+      message: `Model "${GEMINI_MODEL}" failed to process this request. If fallback was attempted, verify "${GEMINI_FALLBACK_MODEL}" is available for your API key. Provider response: ${providerMessage}`,
     });
+  }
+});
+
+app.post('/api/generate-prep', async (req: Request, res: Response) => {
+  try {
+    const { documentKey, event, documentText } = req.body;
+    if (!event || typeof event.id !== 'string' || typeof event.title !== 'string') {
+      return res.status(400).json({ error: 'Missing event', message: 'Provide an event to generate a study plan for.' });
+    }
+    if (!hasGeminiApiKey || !ai) {
+      return res.status(500).json({ error: 'Missing GEMINI_API_KEY', message: 'Add a valid Gemini API key and restart the server.' });
+    }
+    const cacheKey = `${documentKey || documentCacheKey(documentText || '')}:${event.id}`;
+    const cached = prepCache.get(cacheKey);
+    if (cached) return res.json({ success: true, data: cached, cached: true });
+    const prompt = `Create a concise, practical revision plan for this academic event.
+Use only the supplied document context and event facts. Return JSON only.
+Event: ${JSON.stringify(event)}
+Return an object with:
+- id: "prep-${event.id}"
+- duration: realistic total preparation time
+- summary: specific study checklist, brief but useful
+- prepDate: recommended start date YYYY-MM-DD
+- milestones: 2 to 4 study blocks, each with id, dayOffset (days before due date), title, durationMinutes.
+Do not invent facts not supported by the document.`;
+    const context = typeof documentText === 'string' && documentText.trim()
+      ? `DOCUMENT CONTEXT:\n${limitModelText(documentText.trim())}\n\n`
+      : '';
+    const response = await generateAnalysis([{ text: `${context}${prompt}` }], {
+      maxOutputTokens: Math.min(GEMINI_MAX_OUTPUT_TOKENS, 4096),
+      responseMimeType: isGemmaModel ? undefined : 'application/json',
+      responseSchema: isGemmaModel ? undefined : {
+        type: Type.OBJECT,
+        properties: {
+          id: { type: Type.STRING }, duration: { type: Type.STRING }, summary: { type: Type.STRING },
+          prepDate: { type: Type.STRING },
+          milestones: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING }, dayOffset: { type: Type.INTEGER },
+                title: { type: Type.STRING }, durationMinutes: { type: Type.INTEGER },
+              },
+              required: ['id', 'title'],
+            },
+          },
+        },
+        required: ['id', 'duration', 'summary'],
+      },
+    });
+    if (!response.text) throw new Error('Gemini API returned an empty preparation plan.');
+    const prep = parseModelJson(response.text);
+    if (!prep || typeof prep !== 'object' || Array.isArray(prep)) throw new Error('The model returned an invalid preparation plan.');
+    const normalizedPrep = prep as Record<string, unknown>;
+    prepCache.set(cacheKey, normalizedPrep);
+    return res.json({ success: true, data: normalizedPrep });
+  } catch (error: any) {
+    console.error('Error in /api/generate-prep:', error);
+    return res.status(500).json({ error: 'Preparation generation failed', message: error?.message || 'Unable to generate a study plan.' });
   }
 });
 

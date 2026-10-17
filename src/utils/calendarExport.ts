@@ -1,15 +1,13 @@
 import { SyllabusItem, SyllabusAnalysisResult } from '../types/syllabus';
+import { addCalendarDays, parseScheduleDate } from './date';
+import { milestoneDate } from './studySchedule';
 
 /**
  * Formats a Date object or ISO string into an iCalendar date-time string (UTC): YYYYMMDDTHHMMSSZ
  */
 function formatIcsDateTime(dateInput: string | Date): string {
-  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-  if (isNaN(d.getTime())) {
-    // Fallback to today if invalid
-    const now = new Date();
-    return now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-  }
+  const d = typeof dateInput === 'string' ? parseScheduleDate(dateInput) : dateInput;
+  if (!d || isNaN(d.getTime())) return new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
   return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
 }
 
@@ -17,11 +15,8 @@ function formatIcsDateTime(dateInput: string | Date): string {
  * Formats a Date object or ISO string into an iCalendar all-day date: YYYYMMDD
  */
 function formatIcsDate(dateInput: string | Date): string {
-  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-  if (isNaN(d.getTime())) {
-    const now = new Date();
-    return now.toISOString().slice(0, 10).replace(/-/g, '');
-  }
+  const d = typeof dateInput === 'string' ? parseScheduleDate(dateInput) : dateInput;
+  if (!d || isNaN(d.getTime())) return new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
@@ -62,12 +57,12 @@ export function generateIcsCalendar(
 
   data.items.forEach((item) => {
     // 1. Due Date Event
-    const dueDateObj = new Date(item.dueDate);
-    const isValidDate = !isNaN(dueDateObj.getTime());
+    const dueDateObj = parseScheduleDate(item.dueDate);
+    const isValidDate = dueDateObj !== null;
     const eventDate = isValidDate ? dueDateObj : now;
 
     // Check if time is specified (e.g., contains 'T' or hour != 0)
-    const hasTime = item.dueDate.includes('T');
+    const hasTime = Boolean(item.dueDate && item.dueDate.includes('T'));
 
     let dtStartLine = '';
     let dtEndLine = '';
@@ -80,8 +75,7 @@ export function generateIcsCalendar(
       const dtDateStr = formatIcsDate(eventDate);
       dtStartLine = `DTSTART;VALUE=DATE:${dtDateStr}`;
       // All day end date is next day per RFC 5545
-      const nextDay = new Date(eventDate);
-      nextDay.setDate(nextDay.getDate() + 1);
+      const nextDay = addCalendarDays(eventDate, 1);
       dtEndLine = `DTEND;VALUE=DATE:${formatIcsDate(nextDay)}`;
     }
 
@@ -119,11 +113,10 @@ export function generateIcsCalendar(
 
       // If specific prep start date is provided
       if (prep.prepDate) {
-        const prepStartObj = new Date(prep.prepDate);
-        if (!isNaN(prepStartObj.getTime())) {
+        const prepStartObj = parseScheduleDate(prep.prepDate);
+        if (prepStartObj) {
           const prepDateStr = formatIcsDate(prepStartObj);
-          const nextPrepDay = new Date(prepStartObj);
-          nextPrepDay.setDate(nextPrepDay.getDate() + 1);
+          const nextPrepDay = addCalendarDays(prepStartObj, 1);
 
           const prepDesc = [
             `Preparation for: ${item.title} (Due: ${item.dueDate})`,
@@ -149,19 +142,20 @@ export function generateIcsCalendar(
       // Milestones
       if (prep.milestones && prep.milestones.length > 0 && isValidDate) {
         prep.milestones.forEach((m) => {
-          const offsetDays = m.dayOffset ?? 3;
-          const milestoneDate = new Date(dueDateObj);
-          milestoneDate.setDate(milestoneDate.getDate() - offsetDays);
+          const offsetDays = m.dayOffset ?? 1;
+          const scheduledDate = milestoneDate(item, m);
+          if (!scheduledDate) return;
+          const milestoneStart = parseScheduleDate(`${scheduledDate}T18:00:00`);
+          if (!milestoneStart) return;
 
           // Set time to evening study session (e.g. 18:00)
-          milestoneDate.setHours(18, 0, 0, 0);
-          const milestoneEnd = new Date(milestoneDate.getTime() + (m.durationMinutes || 60) * 60 * 1000);
+          const milestoneEnd = new Date(milestoneStart.getTime() + (m.durationMinutes || 60) * 60 * 1000);
 
           ics.push(
             'BEGIN:VEVENT',
             `UID:${m.id || `${item.id}-m`}-${offsetDays}@syllabus-ai`,
             `DTSTAMP:${dtstamp}`,
-            `DTSTART:${formatIcsDateTime(milestoneDate)}`,
+            `DTSTART:${formatIcsDateTime(milestoneStart)}`,
             `DTEND:${formatIcsDateTime(milestoneEnd)}`,
             `SUMMARY:[STUDY BLOCK] ${escapeIcsText(m.title)} (${escapeIcsText(item.title)})`,
             `DESCRIPTION:${escapeIcsText(`Milestone preparation block for ${item.title} (due in ${offsetDays} days).\nDuration: ${m.durationMinutes || 60} minutes`)}`,

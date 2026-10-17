@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { SyllabusAnalysisResult, SyllabusItem } from '../types/syllabus';
 import { CourseKeyInfoCard } from './CourseKeyInfoCard';
+import { parseScheduleDate } from '../utils/date';
+import { downloadFile, generateIcsCalendar } from '../utils/calendarExport';
+import { milestoneDate } from '../utils/studySchedule';
 
 function colorOf(type: string) {
   const colors: Record<string, string> = {
@@ -34,6 +37,7 @@ interface ClassWorkspaceProps {
   onAddDocument: () => void;
   onFinish: () => void;
   onReset: () => void;
+  onGeneratePrep: (item: SyllabusItem) => Promise<void>;
   pdfData?: string;
   includePrep?: boolean;
 }
@@ -58,46 +62,16 @@ function flagsFor(item: SyllabusItem, all: SyllabusItem[]): Flag[] {
 }
 
 function downloadIcs(data: SyllabusAnalysisResult, includePrep: boolean) {
-  const escapeIcs = (value: string) => value
-    .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,')
-    .replace(/\r?\n/g, '\\n');
-  const events = data.items.filter((item) => item.includeInExport !== false && item.dueDate);
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Syllabus Workspace//EN'];
-
-  events.forEach((item) => {
-    const date = item.dueDate.slice(0, 10).replace(/-/g, '');
-    const hasTime = item.dueDate.includes('T');
-    const start = hasTime
-      ? `${date}T${item.dueDate.slice(11, 16).replace(':', '')}00`
-      : date;
-    lines.push('BEGIN:VEVENT', `UID:${item.id}@syllabus-workspace`, `DTSTAMP:${new Date().toISOString().replace(/[-:.]/g, '').replace(/\d{3}Z$/, 'Z')}`);
-    lines.push(hasTime ? `DTSTART:${start}` : `DTSTART;VALUE=DATE:${date}`);
-    lines.push(hasTime ? `DTEND:${start}` : `DTEND;VALUE=DATE:${date}`);
-    lines.push(`SUMMARY:${escapeIcs(item.title)}`);
-    if (item.description) lines.push(`DESCRIPTION:${escapeIcs(item.description)}`);
-    if (item.location) lines.push(`LOCATION:${escapeIcs(item.location)}`);
-    lines.push('END:VEVENT');
-  });
-
-  if (includePrep) {
-    // Preparation metadata has no independent date, so it cannot be exported as an event.
-  }
-  lines.push('END:VCALENDAR');
-  const blob = new Blob([`${lines.join('\r\n')}\r\n`], { type: 'text/calendar;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${(data.courseName || 'syllabus').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'syllabus'}.ics`;
-  link.click();
-  URL.revokeObjectURL(url);
+  const exportData = { ...data, items: data.items.filter((item) => item.includeInExport !== false && parseScheduleDate(item.dueDate)) };
+  const ics = generateIcsCalendar(exportData, { includePrepSessions: includePrep });
+  const name = `${(data.courseCode || 'course').toLowerCase().replace(/[^a-z0-9]/g, '_')}_calendar.ics`;
+  downloadFile(ics, name, 'text/calendar;charset=utf-8');
 }
 
 const MONTH_DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
-  data, onChange, onOpenJson, onOpenCalendar, onReset, onFinish, pdfData, includePrep = true,
+  data, onChange, onOpenJson, onOpenCalendar, onReset, onFinish, onGeneratePrep, pdfData, includePrep = true,
   onAddDocument,
 }) => {
   const [tab, setTab] = useState<WorkspaceTab>('assignments');
@@ -108,9 +82,10 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
   const [chatInput, setChatInput] = useState('');
   const [messages, setMessages] = useState<string[]>(['Ask me to find, review, or update an event.']);
   const [lastDeleted, setLastDeleted] = useState<SyllabusItem | null>(null);
+  const [generatingPrepId, setGeneratingPrepId] = useState<string | null>(null);
   const [month, setMonth] = useState(() => {
-    const first = data.items.map((i) => i.dueDate).filter(Boolean).sort()[0];
-    const d = first ? new Date(first.slice(0, 10) + 'T12:00') : new Date();
+    const first = data.items.map((i) => parseScheduleDate(i.dueDate)).filter((value): value is Date => Boolean(value)).sort((a, b) => a.getTime() - b.getTime())[0];
+    const d = first || new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
 
@@ -202,6 +177,17 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
   const goToEvent = (id: string) => { setSelectedId(id); setTab('assignments'); };
   const viewInDocument = (item: SyllabusItem) => { setSelectedId(item.id); if (item.sourcePage) setSourcePage(item.sourcePage); setTab('documents'); };
 
+  const generatePrep = async (item: SyllabusItem) => {
+    setGeneratingPrepId(item.id);
+    try {
+      await onGeneratePrep(item);
+    } catch (error) {
+      setMessages((current) => [...current, error instanceof Error ? error.message : 'Unable to generate a study plan.']);
+    } finally {
+      setGeneratingPrepId(null);
+    }
+  };
+
   const tabs: Array<[WorkspaceTab, string]> = [
     ['assignments', 'Events'], ['calendar', 'Calendar'], ['documents', 'Document'], ['overview', 'Overview'], ['details', 'Course details'],
   ];
@@ -230,6 +216,20 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
               {item.title}
             </button>
           ))}
+          {data.items.flatMap((item) => (item.prepingInfo?.milestones || []).map((milestone) => ({ item, milestone })))
+            .filter(({ item, milestone }) => milestoneDate(item, milestone) === key && milestone.status !== 'missed')
+            .map(({ item, milestone }) => (
+              <button
+                key={milestone.id}
+                type="button"
+                className="wf-pill"
+                title={`Study block for ${item.title}`}
+                style={{ background: 'var(--workflow-ok-bg)', borderLeft: '3px solid var(--workflow-ok)' }}
+                onClick={() => goToEvent(item.id)}
+              >
+                {milestone.title}
+              </button>
+            ))}
         </div>,
       );
     }
@@ -315,7 +315,7 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
               <div className="wf-table-wrap">
                 <table className="wf-table">
                   <thead>
-                    <tr>{['Export', 'Event', 'Type', 'Date and time', 'Review', 'Source', ''].map((h, i) => <th key={i}>{h}</th>)}</tr>
+                    <tr>{['Export', 'Event', 'Type', 'Date and time', 'Review', 'Source', 'Study plan', ''].map((h, i) => <th key={i}>{h}</th>)}</tr>
                   </thead>
                   <tbody>
                     {visibleItems.map((item) => {
@@ -358,6 +358,16 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
                             ) : 'Not found'}
                           </td>
                           <td>
+                            <button
+                              type="button"
+                              className="workflow-secondary-button"
+                              disabled={generatingPrepId === item.id}
+                              onClick={() => void generatePrep(item)}
+                            >
+                              {generatingPrepId === item.id ? 'Generating…' : item.prepingInfo?.milestones?.length ? 'Regenerate' : 'Generate'}
+                            </button>
+                          </td>
+                          <td>
                             <div style={{ display: 'flex', gap: 4 }}>
                               <button type="button" title="Duplicate" aria-label="Duplicate event" onClick={() => duplicateEvent(item)} className="icon-button"><Copy className="w-3.5 h-3.5" /></button>
                               <button type="button" title="Delete" aria-label="Delete event" onClick={() => deleteEvent(item.id)} className="icon-button danger"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -375,6 +385,15 @@ export const ClassWorkspace: React.FC<ClassWorkspaceProps> = ({
               <div style={{ marginTop: 16, display: 'grid', gap: 16 }} className="lg:grid-cols-2">
                 <div>
                   <h3 className="wf-h2">Details: {selected.title}</h3>
+                  <button
+                    type="button"
+                    className="workflow-secondary-button"
+                    style={{ marginTop: 10 }}
+                    disabled={generatingPrepId === selected.id}
+                    onClick={() => void generatePrep(selected)}
+                  >
+                    {generatingPrepId === selected.id ? 'Generating study plan…' : selected.prepingInfo?.milestones?.length ? 'Regenerate study plan' : 'Generate study plan'}
+                  </button>
                   <label className="wf-label" htmlFor="loc">Location</label>
                   <input id="loc" className="wf-input" value={selected.location || ''} onChange={(e) => editItem(selected.id, { location: e.target.value })} />
                   <label className="wf-label" htmlFor="desc">Description</label>

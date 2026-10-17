@@ -3,6 +3,9 @@ export interface PrepMilestone {
   dayOffset?: number;
   title: string;
   durationMinutes?: number;
+  status?: 'planned' | 'completed' | 'missed';
+  completedAt?: string;
+  manual?: boolean;
 }
 
 export interface PrepingInfo {
@@ -11,6 +14,8 @@ export interface PrepingInfo {
   summary: string;
   prepDate?: string;
   milestones?: PrepMilestone[];
+  priority?: 'low' | 'medium' | 'high';
+  confidence?: 'low' | 'medium' | 'high';
 }
 
 export interface SyllabusItem {
