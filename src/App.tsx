@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, CheckCircle2, FileStack, LayoutDashboard, Settings } from 'lucide-react';
+import { Calendar, FileStack, LayoutDashboard, Settings } from 'lucide-react';
 import { SyllabusAnalysisResult } from './types/syllabus';
 import { sampleSyllabusData } from './utils/sampleData';
 import { PdfUploader } from './components/PdfUploader';
@@ -30,6 +30,16 @@ const NAV: Array<[View, string, React.ComponentType<{ className?: string }>]> = 
 ];
 
 const STEPS = ['Upload', 'Extract', 'Review', 'Export'];
+
+function WorkflowLogoMark() {
+  return (
+    <svg className="workflow-logo-mark" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="23" height="20" rx="5" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M9 3v5M19 3v5M6.5 11h15" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="m7.2 21 1.8-6h3L10.2 21h-3Zm4.9 0 1.2-4h3L15.1 21h-3Zm4.9 0 2.4-8h3L20 21h-3Z" fill="currentColor" />
+    </svg>
+  );
+}
 
 function Stepper({ current }: { current: number }) {
   return (
@@ -241,8 +251,8 @@ export default function App() {
     <div className="workflow-shell">
       <aside className="workflow-sidebar" aria-label="Primary navigation">
         <div className="workflow-logo">
-          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
-          Workflow
+          <WorkflowLogoMark />
+          <span className="workflow-wordmark">Workflow</span>
         </div>
         {NAV.map(([key, label, Icon]) => (
           <button
@@ -260,8 +270,8 @@ export default function App() {
 
       <div className="workflow-content">
         <div className="workflow-mobilebar">
-          <span className="workflow-logo-mark"><CheckCircle2 className="w-3.5 h-3.5" /></span>
-          Workflow
+          <WorkflowLogoMark />
+          <span className="workflow-wordmark">Workflow</span>
         </div>
 
         <main className="workflow-main">
